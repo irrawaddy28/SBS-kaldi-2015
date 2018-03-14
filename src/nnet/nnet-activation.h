@@ -33,7 +33,8 @@ namespace nnet1 {
 class Softmax : public Component {
  public:
   Softmax(int32 dim_in, int32 dim_out) 
-    : Component(dim_in, dim_out)
+    : Component(dim_in, dim_out),
+	  T_(1.0)
   { }
   ~Softmax()
   { }
@@ -42,8 +43,11 @@ class Softmax : public Component {
   ComponentType GetType() const { return kSoftmax; }
 
   void PropagateFnc(const CuMatrixBase<BaseFloat> &in, CuMatrixBase<BaseFloat> *out) {
-    // y = e^x_j/sum_j(e^x_j)
-    out->ApplySoftMaxPerRow(in);
+	// y = e^(x_j/T)/sum_j(e^(x_j/T))
+	CuMatrix<BaseFloat> inT(in.NumRows(), in.NumCols());
+	inT.CopyFromMat(in);
+	inT.Scale(1.0/T_);
+	out->ApplySoftMaxPerRow(inT);  // out->ApplySoftMaxPerRow(in);
   }
 
   void BackpropagateFnc(const CuMatrixBase<BaseFloat> &in, const CuMatrixBase<BaseFloat> &out,
@@ -55,6 +59,19 @@ class Softmax : public Component {
     // respect to activations of last layer neurons)
     in_diff->CopyFromMat(out_diff);
   }
+
+
+  void SetTemperature(const BaseFloat temperature=1.0) {
+    KALDI_ASSERT(temperature > 0);
+    T_ = temperature;    
+  }
+
+  std::string Info() const {
+    return "\n  Temperature = " + ToString(T_);
+  }
+
+  private:
+    BaseFloat T_;
 };
 
 
@@ -62,7 +79,8 @@ class Softmax : public Component {
 class BlockSoftmax : public Component {
  public:
   BlockSoftmax(int32 dim_in, int32 dim_out) 
-    : Component(dim_in, dim_out)
+    : Component(dim_in, dim_out),
+	  T_(1.0)
   { }
   ~BlockSoftmax()
   { }
@@ -116,11 +134,60 @@ class BlockSoftmax : public Component {
 
   void PropagateFnc(const CuMatrixBase<BaseFloat> &in, CuMatrixBase<BaseFloat> *out) {
     // perform softmax per block:
+	KALDI_VLOG(3) << "Feedfwd through blocksoftmax " << "\n";
     for (int32 bl = 0; bl < block_dims.size(); bl++) {
       CuSubMatrix<BaseFloat> in_bl = in.ColRange(block_offset[bl], block_dims[bl]);
       CuSubMatrix<BaseFloat> out_bl = out->ColRange(block_offset[bl], block_dims[bl]);
-      // y = e^x_j/sum_j(e^x_j)
-      out_bl.ApplySoftMaxPerRow(in_bl);
+      // y = e^(x_j/T)/sum_j(e^(x_j/T))
+      int32 num_frames = in_bl.NumRows(), num_pdf = in_bl.NumCols();
+      KALDI_VLOG(3) << " T = " << T_ << ", Block = " << bl << ", num_frames =  " << num_frames << ", num_pdf =  " << num_pdf << "\n";
+
+//      Deep copy
+//      CuMatrix<BaseFloat> dummy(num_frames, num_pdf, kSetZero);
+//      CuSubMatrix<BaseFloat> inT(dummy, 0, num_frames, 0, num_pdf);
+//      inT.CopyFromMat(in_bl);
+
+//       Shallow copy
+//       CuSubMatrix<BaseFloat> inT(in_bl);
+
+//       if (T_ > 1) {
+//        KALDI_VLOG(3) << "in_bl (before scale) = " << in_bl << "\n";
+//        KALDI_VLOG(3) << "inT (before scale) = " << inT << "\n";
+//       }
+//       if (bl == 0) inT.Scale(1.0/T_);  // Temperature only for the first softmax
+//       if (T_ > 1) {
+//       	KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
+//       	KALDI_VLOG(3) << "inT   (after scale) = " << inT << "\n";
+//       }
+//       out_bl.ApplySoftMaxPerRow(inT);  //  out_bl.ApplySoftMaxPerRow(in_bl)
+//       KALDI_VLOG(3) << "Done out_bl.ApplySoftMaxPerRow(inT)" << "\n";
+
+     out_bl.CopyFromMat(in_bl);
+     if (bl == 0) out_bl.Scale(1.0/T_);  // Temperature only for the first softmax
+     if (T_ > 1) {
+       // KALDI_VLOG(3) << "in  (after scale) =  " << in.ColRange(block_offset[bl], block_dims[bl]) << "\n";
+       KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
+       KALDI_VLOG(3) << "inT   (after scale) = " << out_bl << "\n";
+     }
+     out_bl.ApplySoftMaxPerRow(out_bl);  //  out_bl.ApplySoftMaxPerRow(in_bl)
+
+//      CuMatrix<BaseFloat> inT(in_bl);
+//      if (T_ > 1) {
+//        KALDI_VLOG(3) << "in_bl (before scale) = " << in_bl << "\n";
+//        KALDI_VLOG(3) << "inT (before scale) = " << inT << "\n";
+//      }
+//      if (bl == 0) inT.Scale(1.0/T_);  // Temperature only for the first softmax
+//      if (T_ > 1) {
+//       	KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
+//       	KALDI_VLOG(3) << "inT   (after scale) = " << inT << "\n";
+//      }
+//      out_bl.ApplySoftMaxPerRow(inT);
+
+
+//      if (T_ > 1) {
+//    	KALDI_VLOG(3) << "out_bl = " << out_bl << "\n";
+//      }
+      KALDI_VLOG(3) << "Ready to exit" << "\n";
     }
   }
 
@@ -151,15 +218,19 @@ class BlockSoftmax : public Component {
     }
   }
 
+  void SetTemperature(const BaseFloat temperature=1.0) {
+    KALDI_ASSERT(temperature > 0);
+    T_ = temperature; // Temperature only for the first softmax
+  }
+
   std::string Info() const {
-    return "\n  softmax-dims " + ToString(block_dims);
+    return "\n  softmax-dims " + ToString(block_dims) + "\n  softmax-temperature (of 1st block)  " + ToString(T_);
   }
 
   std::vector<int32> block_dims;
   std::vector<int32> block_offset;
+  BaseFloat T_;
 };
-
-
 
 
 class Sigmoid : public Component {

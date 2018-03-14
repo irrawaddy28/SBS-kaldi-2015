@@ -92,34 +92,58 @@ void Xent::Eval(const VectorBase<BaseFloat> &frame_weights,
     CountCorrectFramesWeighted(max_id_out_, max_id_tgt_, frame_weights, &correct);
     
     CuMatrix<BaseFloat> target_interp(target, kNoTrans);
+    int32 num_rows = net_out.NumRows(), num_cols = net_out.NumCols();
 
     // Linearly interpolate targets for the primary task if interpolation wt < 1.0
-  	if (tgt_interp_mode_.compare("none") != 0 && tgt_interp_wt_ > 0 && tgt_interp_wt_ < 1.0) {
-      target_interp.Scale(tgt_interp_wt_);
+  	if (tgt_interp_mode_.compare("none") != 0 && rho_ > 0 && rho_ < 1.0) {
+      target_interp.Scale(rho_);
   	  if (tgt_interp_mode_.compare("soft") == 0) {
   	    // soft interpolation: wt*t_k + (1 - wt)*y_k
-        target_interp.AddMat(1 - tgt_interp_wt_, net_out, kNoTrans);
+        target_interp.AddMat(1 - rho_, net_out, kNoTrans);
   	  } else if (tgt_interp_mode_.compare("hard") == 0) {
   		// hard interpolation: wt*t_k + (1 - wt)*1_{max y_k}
-  		Matrix<BaseFloat> net_out_hard(net_out.NumRows(), net_out.NumCols(), kSetZero);
-  		// net_out.CopyToMat(&net_out_hard, kNoTrans);
-  		// net_out_hard.SetZero();
-  		std::vector<int32> max_id_out(net_out.NumRows());
+  		Matrix<BaseFloat> net_out_hard(num_rows, num_cols, kSetZero);
+  		std::vector<int32> max_id_out(num_rows);
+
   		max_id_out_.CopyToVec(&max_id_out);
   		// Set the "hard" matrix s.t. M(i, max_id_out(i)) = 1 and all other elements set to 0
-  		for(int32 ri=0; ri<net_out_hard.NumRows(); ri++) {
+  		for(int32 ri=0; ri<num_rows; ri++) {
   		  net_out_hard(ri, max_id_out[ri]) = 1.0;
   		}
   		CuMatrix<BaseFloat> net_out_hard_cu(net_out_hard, kNoTrans);
-  		target_interp.AddMat(1 - tgt_interp_wt_, net_out_hard_cu, kNoTrans);
+  		target_interp.AddMat(1 - rho_, net_out_hard_cu, kNoTrans);
   	  }
   	}
 
   // compute derivative wrt. activations of last layer of neurons,
-  *diff = net_out;
-  //diff->AddMat(-1.0, target); // diff <-- (-1.0)*target + diff
-  diff->AddMat(-1.0, target_interp);
+  if (tgt_interp_mode_.compare("none") == 0 || tgt_interp_mode_.compare("hard") == 0) {
+    *diff = net_out;
+    //diff->AddMat(-1.0, target); // diff <-- (-1.0)*target + diff
+    diff->AddMat(-1.0, target_interp);
+  } else {
+	// compute I(f, k) = -log y(f, k), where f = frame index, k = pdf index
+	CuMatrix<BaseFloat> I(net_out);
+	I.Add(1e-20); // avoid log(0)
+	I.ApplyLog(); // log(y)
+	I.Scale(-1);  // I = -log y
+
+	// compute H(f) = - sum_k y(f, k) log y(f, k)
+	CuMatrix<BaseFloat> H(num_rows, num_cols, kSetZero), H1(I), Ones(num_cols, num_cols, kSetZero);
+	H1.MulElements(net_out); // -y*log(y)
+	Ones.Set(1);
+	H.AddMatMat(1.0, H1, kNoTrans, Ones, kNoTrans, 0.0); // H = 1.0*H1*Ones + 0.0*H
+
+	// compute y(f,k)*(rho +  (1-rho)*( I(f,k) - H(f) ) ) - rho*target
+	CuMatrix<BaseFloat> diff2(I);
+	diff2.AddMat(-1.0, H); // diff2 = I(f,k) - H(f)
+	diff2.Scale(1-rho_); // diff2 <-- (1-rho)*(I(f,k) - H(f))
+	diff2.Add(rho_); // diff2 <-- rho + (1-rho)*(I(f,k) - H(f))
+	diff2.MulElements(net_out); // diff2 <-- y(f,k).*diff2(f,k)
+	diff2.AddMat(-rho_,target); // diff2 <-- -rho*t(f,k)
+	*diff = diff2; // deep copy
+  }
   diff->MulRowsVec(frame_weights_); // weighting,
+
 
   // calculate cross_entropy (in GPU),
   xentropy_aux_ = net_out; // y
@@ -140,6 +164,11 @@ void Xent::Eval(const VectorBase<BaseFloat> &frame_weights,
 
   KALDI_ASSERT(KALDI_ISFINITE(cross_entropy));
   KALDI_ASSERT(KALDI_ISFINITE(entropy));
+
+  KALDI_VLOG(4) << __PRETTY_FUNCTION__ << "\n";
+  KALDI_VLOG(4) << "xentropy_aux_ vector = " << xentropy_aux_ << "\n";
+  KALDI_VLOG(4) << "cross_entropy =  " << cross_entropy << "\n";
+  KALDI_VLOG(4) << "entropy = "<< entropy << "\n";
 
   loss_ += cross_entropy;
   entropy_ += entropy;
@@ -186,8 +215,10 @@ void Xent::Eval(const VectorBase<BaseFloat> &frame_weights,
 
 std::string Xent::Report() {
   std::ostringstream oss;
-  oss << "AvgLoss: " << (loss_-entropy_)/frames_ << " (Xent), "
+  oss << "AvgLoss: " << (loss_-entropy_)/frames_ << " (Xent - AvgTgtEnt), "
       << "[AvgXent: " << loss_/frames_ 
+	  << ", Target interpolation mode: " << tgt_interp_mode_
+	  << ", rho:  " << rho_
       << ", AvgTargetEnt: " << entropy_/frames_ << "]" << std::endl;
   if (loss_vec_.size() > 0) {
      oss << "progress: [";
@@ -200,239 +231,6 @@ std::string Xent::Report() {
   return oss.str(); 
 }
 
-/* Xent + Reg Entropy */
-
-// static variable initializations
-int XentRegMCE::use_xent = 0;
-double XentRegMCE::eta_mce = 1;
-unsigned int XentRegMCE::verbosity = 0;
-void XentRegMCE::Eval(const VectorBase<BaseFloat> &frame_weights,
-                const CuMatrixBase<BaseFloat> &net_out,
-                const CuMatrixBase<BaseFloat> &target,
-                CuMatrix<BaseFloat> *diff) {
-  // check inputs,
-  KALDI_ASSERT(net_out.NumCols() == target.NumCols());
-  KALDI_ASSERT(net_out.NumRows() == target.NumRows());
-  KALDI_ASSERT(net_out.NumRows() == frame_weights.Dim());
-
-  KALDI_ASSERT(KALDI_ISFINITE(frame_weights.Sum()));
-  KALDI_ASSERT(KALDI_ISFINITE(net_out.Sum()));
-  KALDI_ASSERT(KALDI_ISFINITE(target.Sum()));
-
-  double num_frames = frame_weights.Sum();
-  KALDI_ASSERT(num_frames >= 0.0);
-
-
-  // get frame_weights to GPU,
-  frame_weights_ = frame_weights;
-
-  // compute derivative wrt. activations of last layer of neurons,
-  int32 npdfids = net_out.NumCols();
-  int32 nframes = net_out.NumRows();
-  CuMatrix<BaseFloat> I;
-  CuMatrix<BaseFloat> H1, H(nframes, npdfids, kSetZero);
-  CuMatrix<BaseFloat> Ones(npdfids, npdfids, kSetZero);
-  CuMatrix<BaseFloat> diff2;
-  //CuVector<BaseFloat> V(npdfids, kSetZero);
-
-  if (verbosity) {
-	  KALDI_LOG << "verbosity = " << verbosity << "\n";
-	  KALDI_LOG << "use_xent = " << use_xent << "\n";
-	  KALDI_LOG << "eta_mce = " << eta_mce << "\n";
-	  KALDI_LOG << "y: " << "\n";
-	  net_out.Write(std::cout, false);
-
-	  KALDI_LOG << "t: " << "\n";
-	  target.Write(std::cout, false);
-  }
-
-  I = net_out;
-  I.Add(1e-20); // avoid log(0)
-  I.ApplyLog(); // log(y)
-  H1 = I;
-  I.Scale(-1); // I = -log y
-
-  if (verbosity) {
-	  KALDI_LOG << "I = - (log y): " << "\n";
-	  I.Write(std::cout, false);
-  }
-
-  H1.MulElements(net_out); // y*log(y)
-
-  Ones.Set(-1);
-  H.AddMatMat(1.0, H1, kNoTrans, Ones, kNoTrans, 0.0); // H = 1.0*H1*Ones + 0.0*H
-
-  if (verbosity) {
-	  KALDI_LOG << "H: " << "\n";
-	  H.Write(std::cout, false);
-  }
-
-  diff2 = I;
-  diff2.AddMat(-1.0, H);
-
-  if (verbosity) {
-	  KALDI_LOG << "I - H: " << "\n";
-	  diff2.Write(std::cout, false);
-  }
-
-  diff2.MulElements(net_out);
-  if (verbosity) {
-	  KALDI_LOG << "y(I - H): " << "\n";
-	  diff2.Write(std::cout, false);
-  }
-
-  diff2.Scale(eta_mce);
-  if (verbosity) {
-	  KALDI_LOG << "eta*y(I - H): " << "\n";
-	  diff2.Write(std::cout, false);
-  }
-
-  // V.AddMatVec();
-  *diff = net_out;
-  diff->AddMat(-1.0, target); // diff = diff + (-1.0) (target)
-  diff->MulRowsVec(frame_weights_); // weighting,
-
-  if (verbosity) {
-	  KALDI_LOG << "y - t: " << "\n";
-	  diff->Write(std::cout, false);
-  }
-
-  if (use_xent) {
-	 diff->AddMat(1.0, diff2);
-	 if (verbosity) {
-		 KALDI_LOG << "y - t + eta*y(I - H): " << "\n";
-		 diff->Write(std::cout, false);
-	 }
-  } else {
-	  *diff = diff2;
-	  if (verbosity) {
-	  		 KALDI_LOG << "eta*y(I - H): " << "\n";
-	  		 diff->Write(std::cout, false);
-	  	 }
-  }
-
-  // evaluate the frame-level classification,
-  double correct;
-  net_out.FindRowMaxId(&max_id_out_); // find max in nn-output
-  target.FindRowMaxId(&max_id_tgt_); // find max in targets
-  CountCorrectFramesWeighted(max_id_out_, max_id_tgt_, frame_weights, &correct);
-
-  // calculate cross_entropy (in GPU),
-  double cross_entropy = -1000; // init with -ve value (invalid)
-  xentropy_aux_ = H1; // y log(y)
-  xentropy_aux_.Scale(eta_mce); // eta* [y log(y)]
-  if (verbosity) {
-  	 KALDI_LOG << "eta * ylog(y): " << "\n";
-  	 xentropy_aux_.Write(std::cout, false);
-  }
-  if (use_xent) {
-	  CuMatrix<BaseFloat> xentropy_buf;
-	  xentropy_buf = I; // I = - log(y)
-	  xentropy_buf.Scale(-1.0); // log(y)
-	  // xentropy_aux_ = net_out; // y
-	  // xentropy_aux_.Add(1e-20); // avoid log(0)
-	  // xentropy_aux_.ApplyLog(); // log(y)
-	  xentropy_buf.MulElements(target); // t*log(y)
-	  xentropy_buf.MulRowsVec(frame_weights_); // w*t*log(y)
-	  xentropy_aux_.AddMat(1.0,xentropy_buf); // w*t*log(y) + eta*ylog(y)
-	  cross_entropy = -xentropy_aux_.Sum(); // this value is actually xent + reg MCE = -w*t*log(y) - eta*ylog(y)
-  } else {
-	  cross_entropy = -xentropy_aux_.Sum(); // this value is actually MCE =  -eta*ylog(y)
-  }
-
-  // caluculate entropy (in GPU),
-  entropy_aux_ = target; // t
-  entropy_aux_.Add(1e-20); // avoid log(0)
-  entropy_aux_.ApplyLog(); // log(t)
-  entropy_aux_.MulElements(target); // t*log(t)
-  entropy_aux_.MulRowsVec(frame_weights_); // w*t*log(t)
-  double entropy = -entropy_aux_.Sum();
-
-  KALDI_ASSERT(KALDI_ISFINITE(cross_entropy));
-  KALDI_ASSERT(KALDI_ISFINITE(entropy));
-
-  loss_ += cross_entropy;
-  entropy_ += entropy;
-  correct_ += correct;
-  frames_ += num_frames;
-
-  // progressive loss reporting
-  {
-    static const int32 progress_step = 3600*100; // 1h
-    frames_progress_ += num_frames;
-    loss_progress_ += cross_entropy;
-    entropy_progress_ += entropy;
-    if (frames_progress_ > progress_step) {
-      if (use_xent) {
-    	  KALDI_VLOG(1) << "ProgressLoss[last "
-                    	<< static_cast<int>(frames_progress_/100/3600) << "h of "
-						<< static_cast<int>(frames_/100/3600) << "h]: "
-						<< (loss_progress_-entropy_progress_)/frames_progress_ << " (XentRegMCE - Ent)";
-    	  // store
-    	  loss_vec_.push_back((loss_progress_-entropy_progress_)/frames_progress_);
-      } else {
-    	  KALDI_VLOG(1) << "ProgressLoss[last "
-    	              	<< static_cast<int>(frames_progress_/100/3600) << "h of "
-    	  				<< static_cast<int>(frames_/100/3600) << "h]: "
-    	  				<< (loss_progress_)/frames_progress_ << " (MCE)";
-    	  // store
-    	  loss_vec_.push_back((loss_progress_)/frames_progress_);
-      }
-      // reset
-      frames_progress_ = 0;
-      loss_progress_ = 0.0;
-      entropy_progress_ = 0.0;
-    }
-  }
-
-}
-
-
-void XentRegMCE::Eval(const VectorBase<BaseFloat> &frame_weights,
-                const CuMatrixBase<BaseFloat> &net_out,
-                const Posterior &post,
-                CuMatrix<BaseFloat> *diff) {
-  int32 num_frames = net_out.NumRows(),
-        num_pdf = net_out.NumCols();
-  KALDI_ASSERT(num_frames == post.size());
-
-  // convert posterior to matrix,
-  PosteriorToMatrix(post, num_pdf, &tgt_mat_);
-
-  if (verbosity) {
-	  KALDI_LOG << "num_frames = " << num_frames << "\n";
-	  KALDI_LOG << "num_pdf = " << num_pdf << "\n";
-  }
-
-  // call the other eval function,
-  Eval(frame_weights, net_out, tgt_mat_, diff);
-}
-
-
-std::string XentRegMCE::Report() {
-  std::ostringstream oss;
-  if (use_xent) {
-	  oss << "AvgLoss: " << (loss_-entropy_)/frames_ << " (XentRegMCE - Ent), "
-	      << "[AvgXent: " << loss_/frames_
-          << ", AvgTargetEnt: " << entropy_/frames_ << "]" << std::endl;
-  } else {
-	  oss << "AvgLoss: " << (loss_)/frames_ << " (MCE), "
-	  	  << "[AvgXent: " << loss_/frames_
-	      << ", AvgTargetEnt: " << entropy_/frames_ << "]" << std::endl;
-  }
-
-  if (loss_vec_.size() > 0) {
-     oss << "progress: [";
-     std::copy(loss_vec_.begin(),loss_vec_.end(),std::ostream_iterator<float>(oss," "));
-     oss << "]" << std::endl;
-  }
-
-  if (correct_ >= 0.0) {
-    oss << "\nFRAME_ACCURACY >> " << 100.0*correct_/frames_ << "% <<";
-  }
-
-  return oss.str();
-}
 
 /* Mse */
 
@@ -522,6 +320,182 @@ std::string Mse::Report() {
 }
 
 
+void TS::Eval2(const VectorBase<BaseFloat> &frame_weights,
+               const CuMatrixBase<BaseFloat> &net_out1,
+			   const CuMatrixBase<BaseFloat> &net_out2,
+               const CuMatrixBase<BaseFloat> &target1,
+			   const CuMatrixBase<BaseFloat> &target2,
+               CuMatrix<BaseFloat> *diff) {
+  // check inputs,
+  KALDI_ASSERT(net_out1.NumCols() == target1.NumCols());
+  KALDI_ASSERT(net_out1.NumRows() == target1.NumRows());
+  KALDI_ASSERT(net_out2.NumCols() == target2.NumCols());
+  KALDI_ASSERT(net_out2.NumRows() == target2.NumRows());
+
+  KALDI_ASSERT(net_out1.NumRows() == frame_weights.Dim());
+
+  KALDI_ASSERT(KALDI_ISFINITE(frame_weights.Sum()));
+  KALDI_ASSERT(KALDI_ISFINITE(net_out1.Sum()));
+  KALDI_ASSERT(KALDI_ISFINITE(target1.Sum()));
+  KALDI_ASSERT(KALDI_ISFINITE(target2.Sum()));
+
+  CuMatrix<BaseFloat> diff1, diff2;
+
+  double num_frames = frame_weights.Sum();
+  KALDI_ASSERT(num_frames >= 0.0);
+
+  // get frame_weights to GPU,
+  frame_weights_ = frame_weights;
+
+  // evaluate the frame-level classification,
+  double correct;
+  net_out1.FindRowMaxId(&max_id_out_); // find max in nn-output
+  target1.FindRowMaxId(&max_id_tgt_); // find max in targets
+  CountCorrectFramesWeighted(max_id_out_, max_id_tgt_, frame_weights, &correct);
+
+  // compute derivative wrt. activations of last layer of neurons,
+  diff1 = net_out1;
+  diff1.AddMat(-1.0, target1); // diff1 <-- (-1.0)*target + diff1
+  diff1.Scale(rho_); // diff1 <-- rho*diff1
+  diff2 = net_out2;  // diff2=net_out2
+  diff2.AddMat(-1.0, target2);
+  diff2.Scale(1.0/T_); // diff2 = (1/T)*(net_out1 - target2) = derivative of temperature softmax ... (eqn 1)
+  diff2.Scale(T_*T_); // diff2 <-- (T^2)*diff2 (artificially scale diff2 by T^2 since eqn 1 is a function of 1/(T^2);
+                      // This helps maintain the magnitude of the gradients of diff2 and diff1 close to each other
+  diff2.Scale(1-rho_); // diff2 <-- (1-rho)*diff2
+  *diff = diff1;
+  diff->AddMat(1.0,diff2); // diff <-- (1.0)*diff2 + diff1
+  diff->MulRowsVec(frame_weights_); // weighting,
+
+  // calculate cross_entropy (CE1) for the hard labels (in GPU),
+  xentropy_aux1_ = net_out1; // y=net_out1
+  xentropy_aux1_.Add(1e-20); // avoid log(0)
+  xentropy_aux1_.ApplyLog(); // log(y)
+  xentropy_aux1_.MulElements(target1); // t*log(y)
+  //xentropy_aux_.MulElements(target_interp); // t*log(y)
+  xentropy_aux1_.MulRowsVec(frame_weights_); // w*t*log(y)
+
+  // calculate cross_entropy (CE2) for the soft labels (temperature softmax) (in GPU),
+  xentropy_aux2_ = net_out2; // y=net_out2
+  xentropy_aux2_.Add(1e-20); // avoid log(0)
+  xentropy_aux2_.ApplyLog(); // log(y)
+  xentropy_aux2_.MulElements(target2); // t*log(y)
+  xentropy_aux2_.MulRowsVec(frame_weights_); // w*t*log(y)
+  // xentropy_aux2_.Scale(T_*T_); // To Do: Scale by T^2 to keep CE2 close to CE1 ??
+
+  // Teacher-Student Loss = rho*CE1 + (1-rho)*CE2
+  double cross_entropy1 = -(xentropy_aux1_.Sum());
+  double cross_entropy2 = -(xentropy_aux2_.Sum());
+  double cross_entropy = rho_*cross_entropy1 +  (1-rho_)*cross_entropy2;
+
+  // calculate entropy (in GPU),
+  entropy_aux_ = target1; // t
+  entropy_aux_.Add(1e-20); // avoid log(0)
+  entropy_aux_.ApplyLog(); // log(t)
+  entropy_aux_.MulElements(target1); // t*log(t)
+  entropy_aux_.MulRowsVec(frame_weights_); // w*t*log(t)
+  double entropy = -entropy_aux_.Sum();
+
+  KALDI_ASSERT(KALDI_ISFINITE(cross_entropy));
+  KALDI_ASSERT(KALDI_ISFINITE(entropy));
+
+  KALDI_VLOG(4) << __PRETTY_FUNCTION__ << "\n";
+  KALDI_VLOG(4) << "xentropy_aux1_ vector = " << xentropy_aux1_ << "\n";
+  KALDI_VLOG(4) << "cross_entropy1 (CE1) =  " << cross_entropy1 << "\n";
+  KALDI_VLOG(4) << "xentropy_aux2_ vector = " << xentropy_aux2_ << "\n";
+  KALDI_VLOG(4) << "cross_entropy2 (CE2) =  " << cross_entropy2 << "\n";
+  KALDI_VLOG(4) << "T/S Loss (rho*CE1+(1-rho)*CE2) =  " << cross_entropy << "\n";
+  KALDI_VLOG(4) << "entropy = "<< entropy << "\n";
+
+  loss_  += cross_entropy;
+  loss1_ += cross_entropy1;
+  loss2_ += cross_entropy2;
+  entropy_ += entropy;
+  correct_ += correct;
+  frames_ += num_frames;
+
+  // progressive loss reporting
+  {
+    static const int32 progress_step = 3600*100; // 1h
+    frames_progress_ += num_frames;
+    loss_progress_ += cross_entropy;
+    entropy_progress_ += entropy;
+    if (frames_progress_ > progress_step) {
+      KALDI_VLOG(1) << "ProgressLoss[last "
+                    << static_cast<int>(frames_progress_/100/3600) << "h of "
+                    << static_cast<int>(frames_/100/3600) << "h]: "
+                    << (loss_progress_-entropy_progress_)/frames_progress_ << " (Xent)";
+      // store
+      loss_vec_.push_back((loss_progress_-entropy_progress_)/frames_progress_);
+      // reset
+      frames_progress_ = 0;
+      loss_progress_ = 0.0;
+      entropy_progress_ = 0.0;
+    }
+  }
+}
+
+
+void TS::Eval2(const VectorBase<BaseFloat> &frame_weights,
+               const CuMatrixBase<BaseFloat> &net_out1,
+			   const CuMatrixBase<BaseFloat> &net_out2,
+               const Posterior &post1,
+			   const Posterior &post2,
+               CuMatrix<BaseFloat> *diff) {
+  int32 num_frames = net_out1.NumRows(),
+    num_pdf = net_out1.NumCols();
+
+  KALDI_ASSERT(num_frames == net_out2.NumRows());
+  KALDI_ASSERT(num_pdf == net_out2.NumCols());
+
+  KALDI_ASSERT(num_frames == post1.size());
+  KALDI_ASSERT(num_frames == post2.size());
+
+  // convert posterior to matrix,
+  PosteriorToMatrix(post1, num_pdf, &tgt_mat1_);
+  PosteriorToMatrix(post2, num_pdf, &tgt_mat2_);
+
+  KALDI_VLOG(4) << "nnet_out1 = " << net_out1 << "\n";
+  KALDI_VLOG(4) << "nnet_tgt = " << tgt_mat1_ << "\n";
+  KALDI_VLOG(4) << "nnet_out2 = " << net_out2 << "\n";
+  KALDI_VLOG(4) << "nnet_tgt2 = " << tgt_mat2_ << "\n";
+
+  // call the other eval function,
+  Eval2(frame_weights, net_out1, net_out2, tgt_mat1_, tgt_mat2_, diff);
+  KALDI_VLOG(4) << "diff = " << (*diff) << "\n";
+}
+
+
+std::string TS::Report() {
+  std::ostringstream oss;
+  oss << "AvgLoss: " << (loss_-entropy_)/frames_ << " (AvgTS - AvgTargetEnt), "
+      << "[AvgTS: " << loss_/frames_
+	  << ", AvgXent (Hard):  " <<  loss1_/frames_
+	  << ", AvgXent (Soft):  " <<  loss2_/frames_
+	  << ", rho:     " << rho_
+      << ", AvgTargetEnt: "    << entropy_/frames_ << "]" << std::endl;
+  if (loss_vec_.size() > 0) {
+     oss << "progress: [";
+     std::copy(loss_vec_.begin(),loss_vec_.end(),std::ostream_iterator<float>(oss," "));
+     oss << "]" << std::endl;
+  }
+  if (correct_ >= 0.0) {
+    oss << "FRAME_ACCURACY >> " << 100.0*correct_/frames_ << "% <<" << std::endl;
+  }
+  return oss.str();
+}
+
+void TS::SetTemperature(const BaseFloat temperature=1.0) {
+  KALDI_ASSERT(temperature > 0);
+  T_ = temperature;
+}
+
+void TS::SetRho(const BaseFloat rho=1.0) {
+  KALDI_ASSERT(rho >= 0);
+  KALDI_ASSERT(rho <= 1.0);
+  rho_ = rho;
+}
+
 /* MultiTaskLoss */
 
 void MultiTaskLoss::InitFromString(const std::string& s) {
@@ -539,6 +513,9 @@ void MultiTaskLoss::InitFromString(const std::string& s) {
       loss_vec_.push_back(new Xent());
     } else if (*it == "mse") {
       loss_vec_.push_back(new Mse());
+    } else if (*it == "ts") {
+      loss_vec_.push_back(new TS());
+      teacherstudent_ = true;
     } else {
       KALDI_ERR << "Unknown objective function code : " << *it;
     }
@@ -560,6 +537,7 @@ void MultiTaskLoss::InitFromString(const std::string& s) {
   }
 
   // build vector with starting-point offsets,
+  // e.g., if dims= 3:4:2, then offsets = 0:3:7:9 (meaning nodes 0-2 for task 1, nodes 3-6 for task 2, nodes 7-8 for task 3)
   loss_dim_offset_.resize(loss_dim_.size()+1, 0); // 1st zero stays,
   for (int32 i = 1; i <= loss_dim_.size(); i++) {
     loss_dim_offset_[i] = loss_dim_offset_[i-1] + loss_dim_[i-1];
@@ -589,6 +567,13 @@ void MultiTaskLoss::Eval(const VectorBase<BaseFloat> &frame_weights,
   /// One vector of frame_weights per loss-function,
   /// The original frame weights are multiplied with
   /// a mask of `defined targets' according to the 'Posterior'.
+  /// E.g. If the original frame weights are 0.9 and
+  /// there are 10 frames with even and odd numbered frames
+  /// belonging to task 1 and task 2 respectively, then
+  /// the matrix frmwei_have_tgt will have the following values:
+  ///  frames ->  0    1    2    3    4    5    6    7    8    9
+  ///  task 1     0.9  0   0.9   0   0.9   0   0.9   0   0.9   0
+  ///  task 2     0   0.9   0   0.9   0   0.9   0   0.9   0   0.9
   std::vector<Vector<BaseFloat> > frmwei_have_tgt;
   for (int32 l = 0; l < loss_vec_.size(); l++) {
     // copy original weights,
@@ -606,15 +591,16 @@ void MultiTaskLoss::Eval(const VectorBase<BaseFloat> &frame_weights,
       }
       if (!tgt_defined) {
           frmwei_have_tgt[l](f) = 0.0; // set zero_weight for the frame with no targets!
-        }
       }
+    }
   }
 
   // call the vector of loss functions,
   CuMatrix<BaseFloat> diff_aux;
   for (int32 l = 0; l < loss_vec_.size(); l++) {
+	// target interpolation is only for the first softmax
     if (tgt_interp_mode_.compare("none") != 0 && l == 0) {
-      loss_vec_[l]->Set_Target_Interp(tgt_interp_mode_, tgt_interp_wt_);
+      loss_vec_[l]->Set_Target_Interp(tgt_interp_mode_, rho_);
       loss_vec_[l]->Eval(frmwei_have_tgt[l],
         net_out.ColRange(loss_dim_offset_[l], loss_dim_[l]),
         tgt_mat_.ColRange(loss_dim_offset_[l], loss_dim_[l]),
@@ -652,6 +638,102 @@ void MultiTaskLoss::Eval(const VectorBase<BaseFloat> &frame_weights,
     // Copy to diff,
     diff->ColRange(loss_dim_offset_[i], loss_dim_[i]).CopyFromMat(diff_aux);
   } */
+}
+
+void MultiTaskLoss::Eval2(const VectorBase<BaseFloat> &frame_weights,
+                         const CuMatrixBase<BaseFloat> &net_out1,
+			             const CuMatrixBase<BaseFloat> &net_out2,
+                         const Posterior &post1,
+			             const Posterior &post2,
+                         CuMatrix<BaseFloat> *diff) {
+
+	int32 num_frames = net_out1.NumRows(),
+         num_output = net_out1.NumCols();
+
+	KALDI_ASSERT(num_frames == net_out2.NumRows());
+	KALDI_ASSERT(num_output == net_out2.NumCols());
+
+	KALDI_ASSERT(num_frames == post1.size());
+	KALDI_ASSERT(num_frames == post2.size());
+	KALDI_ASSERT(num_output == loss_dim_offset_.back()); // sum of loss-dims,
+
+	// convert posterior to matrix,
+	PosteriorToMatrix(post1, num_output, &tgt_mat1_);
+	PosteriorToMatrix(post2, num_output, &tgt_mat2_);
+
+	KALDI_VLOG(4) << "nnet_out1 = " << net_out1 << "\n";
+	KALDI_VLOG(4) << "nnet_tgt1 = " << tgt_mat1_ << "\n";
+	KALDI_VLOG(4) << "nnet_out2 = " << net_out2 << "\n";
+	KALDI_VLOG(4) << "nnet_tgt2 = " << tgt_mat2_ << "\n";
+
+	// allocate diff matrix,
+	diff->Resize(num_frames, num_output);
+
+	/// One vector of frame_weights per loss-function,
+	/// The original frame weights are multiplied with
+	/// a mask of `defined targets' according to the 'Posterior'.
+	std::vector<Vector<BaseFloat> > frmwei_have_tgt;
+	for (int32 l = 0; l < loss_vec_.size(); l++) {
+	  // copy original weights,
+	  frmwei_have_tgt.push_back(Vector<BaseFloat>(frame_weights));
+	  // We need to mask-out the frames for which the 'posterior' is not defined (= is empty):
+	  int32 loss_beg = loss_dim_offset_[l];   // first column of loss target,
+	  int32 loss_end = loss_dim_offset_[l+1]; // (last+1) column of loss target,
+	  for (int32 f = 0; f < num_frames; f++) {
+	    bool tgt_defined = false;
+	    for (int32 p = 0; p < post1[f].size(); p++) {
+	      if (post1[f][p].first >= loss_beg && post1[f][p].first < loss_end) {
+	        tgt_defined = true;
+	        break;
+	      }
+	    }
+	    if (!tgt_defined) {
+	        frmwei_have_tgt[l](f) = 0.0; // set zero_weight for the frame with no targets!
+	    }
+	  }
+    }
+
+	// call the vector of loss functions,
+	CuMatrix<BaseFloat> diff_aux;
+	for (int32 l = 0; l < loss_vec_.size(); l++) {
+	  if (l == 0){
+		loss_vec_[0]->SetTemperature(T_);
+		loss_vec_[0]->SetRho(rho_);
+		loss_vec_[0]->Eval2(frmwei_have_tgt[0],
+		  net_out1.ColRange(loss_dim_offset_[0], loss_dim_[0]),
+		  net_out2.ColRange(loss_dim_offset_[0], loss_dim_[0]),
+		  tgt_mat1_.ColRange(loss_dim_offset_[0], loss_dim_[0]),
+		  tgt_mat2_.ColRange(loss_dim_offset_[0], loss_dim_[0]),
+		  &diff_aux);
+	  } else {
+	  loss_vec_[l]->Eval(frmwei_have_tgt[l],
+	    net_out1.ColRange(loss_dim_offset_[l], loss_dim_[l]),
+	    tgt_mat1_.ColRange(loss_dim_offset_[l], loss_dim_[l]),
+	    &diff_aux);
+      }
+
+	  // Scale the gradients,
+	  diff_aux.Scale(loss_weights_[l]);
+	  // Copy to diff,
+	  diff->ColRange(loss_dim_offset_[l], loss_dim_[l]).CopyFromMat(diff_aux);
+    }
+	KALDI_VLOG(4) << "diff = " << (*diff) << "\n";
+}
+
+
+bool MultiTaskLoss::IsTS() {
+	return teacherstudent_ ;
+}
+
+void MultiTaskLoss::SetTemperature(const BaseFloat temperature=1.0) {
+  KALDI_ASSERT(temperature > 0);
+  T_ = temperature;
+}
+
+void MultiTaskLoss::SetRho(const BaseFloat rho=1.0) {
+  KALDI_ASSERT(rho >= 0);
+  KALDI_ASSERT(rho <= 1.0);
+  rho_ = rho;
 }
 
 std::string MultiTaskLoss::Report() {

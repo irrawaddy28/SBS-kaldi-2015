@@ -517,7 +517,7 @@ namespace nnet1 {
 	c[0]->Write(std::cout, false);
 	c[1]->Write(std::cout, false);
 
-	// create feature matrix: row 1-2: class 0, row 3-4: class 1, row 5-6: class 2
+	// create feature matrix: frame 1-2: class 0, frame 3-4: class 1, frame 5-6: class 2
 	// we'll pass the same feature matrix through both the components in the parallel component
 	CuMatrix<BaseFloat> mat_in;
 	ReadCuMatrixFromString("[ -9.2396   -7.4065    -13.1945  -8.7807   -9.5492   ;  \
@@ -530,12 +530,13 @@ namespace nnet1 {
 	// create targets: assign a label for each row of feature matrix
 	// Labels for task 1  = {0, 1, 2}. Labels for task 2  = {3, 4, 5}
 	Posterior post(mat_in.NumRows());
-	post[0].push_back(std::make_pair(0, 1.0)); // frame 0, target = 0 (task 1)
-	post[1].push_back(std::make_pair(3, 1.0)); // frame 1, target = 3 (task 2)
-	post[2].push_back(std::make_pair(1, 1.0)); // frame 2, target = 1 (task 1)
-	post[3].push_back(std::make_pair(4, 1.0)); // frame 3, target = 4 (task 2)
-	post[4].push_back(std::make_pair(2, 1.0)); // frame 4, target = 2 (task 1)
-	post[5].push_back(std::make_pair(5, 1.0)); // frame 5, target = 5 (task 2)
+	post[0].push_back(std::make_pair(0, 1.0)); // frame 1, class = 0, node = 0 (task 1)
+	post[1].push_back(std::make_pair(3, 1.0)); // frame 2, class = 0, node = 3 (task 2)
+	post[2].push_back(std::make_pair(1, 1.0)); // frame 3, class = 1, node = 1 (task 1)
+	post[3].push_back(std::make_pair(4, 1.0)); // frame 4, class = 1, node = 4 (task 2)
+	post[4].push_back(std::make_pair(2, 1.0)); // frame 5, class = 2, node = 2 (task 1)
+	post[5].push_back(std::make_pair(5, 1.0)); // frame 6, class = 2, node = 5 (task 2)
+
 
 
 	// create frame weights
@@ -658,6 +659,140 @@ namespace nnet1 {
 #endif
   }
 
+  void UnitTestTemperedSoftmaxComponent() {
+
+  	// Create 2 tasks in parallel: task 1(affine xform + softmax), task 2 (affine xform + softmax)
+  	std::vector<Component*> c;
+  	c.push_back(Component::Init(" <AffineTransform> <InputDim> 5 <OutputDim> 3 <BiasMean> 0.000000 <BiasRange> 0.000000 <ParamStddev> 0.091537 <LearnRateCoef> 1.000000 <BiasLearnRateCoef> 0.100000 "));
+  	c.push_back(Component::Init(" <TemperatureSoftmax> <InputDim> 3 <OutputDim> 3 <Temperature> 2.0 "));
+  	// c.push_back(Component::Init(" <Softmax> <InputDim> 3 <OutputDim> 3 <Temperature> 1.0 "));
+
+  	c[0]->Write(std::cout, false);
+  	c[1]->Write(std::cout, false);
+
+  	// create feature matrix: frame 1-2: class 0, frame 3-4: class 1, frame 5-6: class 2
+  	// we'll pass the same feature matrix through both the components in the parallel component
+  	CuMatrix<BaseFloat> mat_in;
+  	ReadCuMatrixFromString("[ -9.2396   -7.4065    -13.1945  -8.7807   -9.5492   ;  \
+  							  -11.8494  -10.6132   -9.5155   -4.9394   -6.0834   ; \
+  							  -1.9090    4.2920     1.0259   -0.0892    1.0108   ; \
+  							  -0.2899   -0.1756     2.1068    1.9927    2.0042   ; \
+  	                          10.9496    8.2924    11.0143   12.3055   10.6914   ; \
+  						      11.4633   11.0280     9.5709   10.4156    8.8866   ]", &mat_in);
+
+  	// create targets: assign a label for each frame
+  	Posterior post(mat_in.NumRows());
+  	post[0].push_back(std::make_pair(0, 1.0)); // frame 1, class = 0
+  	post[1].push_back(std::make_pair(0, 1.0)); // frame 2, class = 0
+  	post[2].push_back(std::make_pair(1, 1.0)); // frame 3, class = 1
+  	post[3].push_back(std::make_pair(1, 1.0)); // frame 4, class = 1
+  	post[4].push_back(std::make_pair(2, 1.0)); // frame 5, class = 2
+  	post[5].push_back(std::make_pair(2, 1.0)); // frame 6, class = 2
+
+  	// create frame weights
+  	Vector<BaseFloat> frm_weights(mat_in.NumRows());
+  	frm_weights.Set(1);
+  	KALDI_LOG << "frame weights = " << frm_weights << "\n";
+
+  	// convert posterior to matrix,
+  	CuMatrix<BaseFloat> mat_tgt;
+  	PosteriorToMatrix(post, c[1]->OutputDim(), &mat_tgt);
+  	KALDI_LOG << "targets = " << mat_tgt << "\n";
+
+  	// Feedforward
+  	std::vector< CuMatrix<BaseFloat> > mat_out(2);
+  	KALDI_LOG << "mat_in (i/p features) = " << mat_in << "\n";
+  	c[0]->Propagate(mat_in,&mat_out[0]);
+  	KALDI_LOG << "mat_out[0] (o/p of Affine xform) = " << mat_out[0] << "\n";
+  	KALDI_LOG << c[1]->Info() << "\n";
+  	c[1]->Propagate(mat_out[0],&mat_out[1]);
+  	KALDI_LOG << "mat_out[1] (yk = o/p of softmax) = " << mat_out[1] << "\n";
+//  	c[1]->SetTemperature(3.0);
+//  	KALDI_LOG << c[1]->Info() << "\n";
+//  	c[1]->Propagate(mat_out[0],&mat_out[1]);
+//  	KALDI_LOG << "mat_out[1] (yk = o/p of softmax) = " << mat_out[1] << "\n";
+
+  	// Backprop
+  	// convert posterior to matrix,
+  	CuMatrix<BaseFloat> tgt;
+  	PosteriorToMatrix(post, mat_out[1].NumCols(), &tgt);
+  	KALDI_LOG << "targets  (tk) = " << tgt << "\n";
+  	std::vector< CuMatrix<BaseFloat> > mat_diff(3);
+  	Xent xent;
+  	xent.Eval(frm_weights, mat_out[1], post, &mat_diff[0]);
+  	KALDI_LOG << "mat_diff[0] (dE/dak = (1/Temperature)*(yk - tk) = " << mat_diff[0] << "\n"; // todo: add support for temp
+  	c[1]->Backpropagate(mat_out[0], mat_out[1], mat_diff[0], &mat_diff[1]);
+  	KALDI_LOG << "mat_diff[1] (copy) = " << mat_diff[1] << "\n";
+  	c[0]->Backpropagate(mat_in, mat_out[0], mat_diff[1], &mat_diff[2]);
+  	KALDI_LOG << "mat_diff[1] (bprop o/p of Affine xform) = " << mat_diff[2] << "\n";
+  }
+
+  void UnitTestBlockTemperedSoftmaxComponent() {
+
+	// Create 2 tasks in parallel: task 1(affine xform + softmax), task 2 (affine xform + softmax)
+	std::vector<Component*> c;
+	c.push_back(Component::Init(" <AffineTransform> <InputDim> 5 <OutputDim> 6 <BiasMean> 0.000000 <BiasRange> 0.000000 <ParamStddev> 0.091537 <LearnRateCoef> 1.000000 <BiasLearnRateCoef> 0.100000 "));
+	c.push_back(Component::Init(" <BlockSoftmax> <InputDim> 6 <OutputDim> 6 <BlockDims> 3:3 "));
+
+	c[0]->Write(std::cout, false);
+	c[1]->Write(std::cout, false);
+
+	// create feature matrix: frame 1-2: class 0, frame 3-4: class 1, frame 5-6: class 2
+	// we'll pass the same feature matrix through both the components in the parallel component
+	CuMatrix<BaseFloat> mat_in;
+	ReadCuMatrixFromString("[ -9.2396   -7.4065    -13.1945  -8.7807   -9.5492   ;  \
+							  -11.8494  -10.6132   -9.5155   -4.9394   -6.0834   ; \
+							  -1.9090    4.2920     1.0259   -0.0892    1.0108   ; \
+							  -0.2899   -0.1756     2.1068    1.9927    2.0042   ; \
+	                          10.9496    8.2924    11.0143   12.3055   10.6914   ; \
+						      11.4633   11.0280     9.5709   10.4156    8.8866   ]", &mat_in);
+
+	// create targets: assign a label for each frame
+	// Labels for task 1  = {0, 1, 2}. Labels for task 2  = {3, 4, 5}
+	Posterior post(mat_in.NumRows());
+	post[0].push_back(std::make_pair(0, 1.0)); // frame 1, class = 0, node = 0 (task 1)
+	post[1].push_back(std::make_pair(3, 1.0)); // frame 2, class = 0, node = 3 (task 2)
+	post[2].push_back(std::make_pair(1, 1.0)); // frame 3, class = 1, node = 1 (task 1)
+	post[3].push_back(std::make_pair(4, 1.0)); // frame 4, class = 1, node = 4 (task 2)
+	post[4].push_back(std::make_pair(2, 1.0)); // frame 5, class = 2, node = 2 (task 1)
+	post[5].push_back(std::make_pair(5, 1.0)); // frame 6, class = 2, node = 5 (task 2)
+
+
+	// create frame weights
+	Vector<BaseFloat> frm_weights(mat_in.NumRows());
+	frm_weights.Set(1);
+	KALDI_LOG << "frame weights = " << frm_weights << "\n";
+
+	// convert posterior to matrix,
+	CuMatrix<BaseFloat> mat_tgt;
+	PosteriorToMatrix(post, c[1]->OutputDim(), &mat_tgt);
+	KALDI_LOG << "targets = " << mat_tgt << "\n";
+
+	// Feedforward
+	std::vector< CuMatrix<BaseFloat> > mat_out(2);
+	KALDI_LOG << "mat_in (i/p features) = " << mat_in << "\n";
+	c[0]->Propagate(mat_in,&mat_out[0]);
+	KALDI_LOG << "mat_out[0] (o/p of Affine xform) = " << mat_out[0] << "\n";
+	c[1]->Propagate(mat_out[0],&mat_out[1]);
+	KALDI_LOG << "mat_out[1] (yk = o/p of softmax) = " << mat_out[1] << "\n";
+
+	// Backprop
+	// convert posterior to matrix,
+	CuMatrix<BaseFloat> tgt;
+	PosteriorToMatrix(post, mat_out[1].NumCols(), &tgt);
+	KALDI_LOG << "targets  (tk) = " << tgt << "\n";
+	std::vector< CuMatrix<BaseFloat> > mat_diff(3);
+	MultiTaskLoss multitask;
+	multitask.InitFromString("multitask,xent,3,1.0,xent,3,1.0");
+	multitask.Eval(frm_weights, mat_out[1], post, &mat_diff[0]);
+	KALDI_LOG << "mat_diff[0] (xent loss = yk - tk) = " << mat_diff[0] << "\n";
+	c[1]->Backpropagate(mat_out[0], mat_out[1], mat_diff[0], &mat_diff[1]);
+	KALDI_LOG << "mat_diff[1] (masked yk - tk) = " << mat_diff[1] << "\n";
+	c[0]->Backpropagate(mat_in, mat_out[0], mat_diff[1], &mat_diff[2]);
+	KALDI_LOG << "mat_diff[1] (bprop o/p of Affine xform) = " << mat_diff[2] << "\n";
+
+  }
+
 } // namespace nnet1
 } // namespace kaldi
 
@@ -685,7 +820,9 @@ int main() {
     // UnitTestParallelComponent_WithMSE();
     // UnitTestParallelComponent_WithMSE(2);
     // UnitTestBlockSoftmaxComponent();
-    UnitTestTargetInterpolation();
+    // UnitTestTargetInterpolation();
+    // UnitTestBlockTemperedSoftmaxComponent();
+    UnitTestTemperedSoftmaxComponent();
     // end of unit-tests,
     if (loop == 0)
         KALDI_LOG << "Tests without GPU use succeeded.";

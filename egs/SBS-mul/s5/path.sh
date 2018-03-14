@@ -1,6 +1,6 @@
 if [[ `hostname` == "ifp-48" ]]; then
   export KALDI_ROOT=../../../
-  export N_BG=4
+  export N_BG=3
   export parallel_opts="--num-threads 2"
   export randomizer_size=131072   # per-job size = 2^17 = 131072 fills about 750 MB in GPU
   export minibatch_size=512

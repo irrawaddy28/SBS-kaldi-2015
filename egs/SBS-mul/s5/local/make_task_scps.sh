@@ -98,7 +98,7 @@ for i in $(seq 0 $[n_tasks-1]); do
     num_copies=${dam[0]}
 
     [ $dtype == "unsup" ] && tr90_unsup_scps="${feat_task_dir}_tr90/feats.scp" # include the base scp, save for future use
-
+    
     # Make copies of features
     if [ $num_copies -gt 0 ]; then
       echo "==================================="
@@ -123,14 +123,18 @@ for i in $(seq 0 $[n_tasks-1]); do
       tr90="$tr90 ${feat_task_dir}_tr90" # build the combined feat dir list
       tr90_nutts="$tr90_nutts `cat ${feat_task_dir}_tr90/feats.scp|wc -l`"
     fi
-    #for n in "${tr90[@]}"; do tr90_nutts="$tr90_nutts `echo $(cat $tr90[$n]/feats.scp|wc -l)`"
+    #for n in "${tr90[@]}"; do tr90_nutts="$tr90_nutts `echo $(cat $tr90[$n]/feats.scp|wc -l)`"    
 done
+echo tr90        =  $tr90
+echo tr90_nutts  =  $tr90_nutts
 
 # Merge copies of task specific features to a single combined feature dir
 echo -e "\n\nTask specific tr90 directories: Number of utterances";
+echo -e "--------------------------------------------------------";
 tr90_nutts_tot=""; for n in ${tr90_nutts[@]}; do tr90_nutts_tot=$((tr90_nutts_tot + n)); done
 paste -d '\t' <(echo $tr90|sed 's/ /\n/g') <(echo $tr90_nutts|sed 's/ /\n/g');
 echo -e "\nCombined tr90: Number of utterances";
+echo -e "--------------------------------------";
 echo -e "$feat_dir_tr90 \t $tr90_nutts_tot\n\n"
 if $make_num_copies ; then
   ## Merge the datasets
@@ -167,7 +171,7 @@ fi
 # Make label(target) posteriors and frame weights of task specific feature directories
 for i in $(seq 0 $[n_tasks-1]); do
 
-	taskid="task_$((i+1))"
+	  taskid="task_$((i+1))"
     lang=${lang_list[$i]}
     dtype=${dtype_list[$i]}
     ltype=${ltype_list[$i]}
@@ -177,6 +181,20 @@ for i in $(seq 0 $[n_tasks-1]); do
     thresh=${thresh_list[$i]}
     dam=($(echo ${dup_and_merge_list[$i]}|tr '>>' ' '))
     num_copies=${dam[0]}
+
+    echo " "
+    echo taskid        = $taskid
+    echo lang          = $lang
+    echo dtype         = $dtype
+    echo ltype         = $ltype
+    echo feat_task_dir = $feat_task_dir
+    echo lat           = $lat
+    echo thresh        = $thresh
+    echo dam           = $dam
+    echo num_copies    = $num_copies
+    echo dir           = $dir
+
+
     
     postsubdir=local/${lang}_${dtype}_${ltype}/post_train_thresh${thresh:+_$thresh}
     postdir=$dir/$postsubdir
@@ -186,7 +204,7 @@ for i in $(seq 0 $[n_tasks-1]); do
     echo ""
     echo "==================================="
     echo "Generating posteriors and frame weights for: lang = $lang, data type = $dtype, label type = $ltype, ali = $ali, lat = $lat, num copies = $num_copies, posterior dir = $postdir"
-    echo "==================================="
+    echo "==================================="    
 
     
     if [ "$dtype" == "pt" -o "$dtype" == "semisup" ]; then

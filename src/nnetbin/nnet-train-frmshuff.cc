@@ -33,9 +33,14 @@ int main(int argc, char *argv[]) {
     const char *usage =
         "Perform one iteration of Neural Network training by mini-batch Stochastic Gradient Descent.\n"
         "This version use pdf-posterior as targets, prepared typically by ali-to-post.\n"
-        "Usage:  nnet-train-frmshuff [options] <feature-rspecifier> <targets-rspecifier> <model-in> [<model-out>]\n"
+        "Usage:  a) Non Teacher-Student Loss,\n"
+    	"        nnet-train-frmshuff [options] <feature-rspecifier> <targets-rspecifier> <model-in> [<model-out>]\n\n"
+    	"        b) Teacher-Student Loss,\n"
+    	"        nnet-train-frmshuff [options] --teacher-student=true --softmax-temperature=<T>0> --rho=<[0,1]> <feature-rspecifier> <targets-rspecifier1> <targets-rspecifier2> <model-in> [<model-out>]\n\n"
         "e.g.: \n"
-        " nnet-train-frmshuff scp:feature.scp ark:posterior.ark nnet.init nnet.iter1\n";
+        " a) nnet-train-frmshuff scp:feature.scp ark:posterior.ark nnet.init nnet.iter1\n"
+    	" b) nnet-train-frmshuff --teacher-student=true --softmax-temperature=2 --rho=0.2 scp:feature.scp ark:1-hot-posterior.ark ark:soft-posterior.ark nnet.init nnet.iter1\n";
+
 
     ParseOptions po(usage);
 
@@ -46,15 +51,17 @@ int main(int argc, char *argv[]) {
 
     bool binary = true, 
          crossvalidate = false,
-         randomize = true;
+         randomize = true,
+		 teacherstudent = false;
     po.Register("binary", &binary, "Write output in binary mode");
     po.Register("cross-validate", &crossvalidate, "Perform cross-validation (don't backpropagate)");
     po.Register("randomize", &randomize, "Perform the frame-level shuffling within the Cache::");
+    // po.Register("verbose", &verbose, "Print debug messages (Warning: Can be too many)");
 
     std::string feature_transform;
     po.Register("feature-transform", &feature_transform, "Feature transform in Nnet format");
     std::string objective_function = "xent";
-    po.Register("objective-function", &objective_function, "Objective function : xent|mse|xentregmce");
+    po.Register("objective-function", &objective_function, "Objective function : xent|mse|xentregmce|ts");
 
     int32 length_tolerance = 5;
     po.Register("length-tolerance", &length_tolerance, "Allowed length difference of features/targets (frames)");
@@ -66,33 +73,74 @@ int main(int argc, char *argv[]) {
     po.Register("use-gpu", &use_gpu, "yes|no|optional, only has effect if compiled with CUDA");
     
     std::string tgt_interp_mode="none";
-    po.Register("tgt-interp-mode", &tgt_interp_mode, "none|soft|hard, Modify targets by interpolating with a function of n/w outputs");
+    po.Register("tgt-interp-mode", &tgt_interp_mode, "none|soft|hard, Modify ground truth target by interpolating it with nnet posterior or some function of nnet posterior");
 
-    float tgt_interp_wt = 1.0;
-    po.Register("tgt-interp-wt", &tgt_interp_wt, "Wt*(ground truth target) + (1 - Wt)*function(n/w output)");
 
-    po.Register("use-xent-in-xentregent", &XentRegMCE::use_xent, "1|0, 1 if we consider xent while minimizing MCE");
-    po.Register("eta-xentregent", &XentRegMCE::eta_mce, "regularization constant of MCE term");
-    po.Register("verbosity-xentregent", &XentRegMCE::verbosity, "verbosity level during MCE evaluation");
+    // po.Register("teacher-student", &teacherstudent, "Train using Teacher-Student loss");
+
+    float softmax_temperature = 1.0;
+    po.Register("softmax-temperature", &softmax_temperature, "Apply temperature to softmax; Used for Teacher-Student (T/S) training");
+
+    float rho = 1.0; // rho = 1, retrieves the standard CE loss
+    po.Register("rho", &rho, "rho has different meanings depending on the loss function. "
+    		                "\nFor non Teacher-Student Loss, new ground truth target = rho*(ground truth target from corpus) + (1 - rho)*(function of nnet posterior)"
+							"\nFor Teacher-Student Loss, Loss = rho*(CE w/ 1-hot labels) + (1-rho)*(CE w/ teacher labels)");
 
     double dropout_retention = 0.0;
     po.Register("dropout-retention", &dropout_retention, "number between 0..1, saying how many neurons to preserve (0.0 will keep original value");
-     
+
     
     po.Read(argc, argv);
 
-    if (po.NumArgs() != 4-(crossvalidate?1:0)) {
-      po.PrintUsage();
-      exit(1);
+    Xent xent;
+    Mse mse;
+    TS ts;
+    MultiTaskLoss multitask;
+
+    if (0 == objective_function.compare(0,2,"ts")) {
+      teacherstudent = true;
+    }
+
+    if (0 == objective_function.compare(0,9,"multitask")) {
+      // objective_function contains something like :
+      // 'multitask,xent,2456,1.0,mse,440,0.001'
+      //
+      // the meaning is the following:
+      // 'multitask,<type1>,<dim1>,<weight1>,...,<typeN>,<dimN>,<weightN>'
+      multitask.InitFromString(objective_function);
+      teacherstudent = multitask.IsTS();
+    }
+
+    if (!teacherstudent) {
+      if (po.NumArgs() != 4-(crossvalidate?1:0)) {
+        po.PrintUsage();
+        exit(1);
+      }
+    } else {
+      if (po.NumArgs() != 5-(crossvalidate?1:0)) {
+    	po.PrintUsage();
+    	exit(1);
+      }
     }
 
     std::string feature_rspecifier = po.GetArg(1),
       targets_rspecifier = po.GetArg(2),
-      model_filename = po.GetArg(3);
+	  model_filename;
+
+    std::string targets_rspecifier2 = po.GetArg(2); // valid only for teacher-student loss, init to fake now
         
     std::string target_model_filename;
-    if (!crossvalidate) {
-      target_model_filename = po.GetArg(4);
+    if (!teacherstudent) {
+      model_filename = po.GetArg(3);
+      if (!crossvalidate) {
+        target_model_filename = po.GetArg(4);
+      }
+    } else { // teacher-student loss
+      targets_rspecifier2 = po.GetArg(3);
+      model_filename = po.GetArg(4);
+      if (!crossvalidate) {
+        target_model_filename = po.GetArg(5);
+      }
     }
 
     using namespace kaldi;
@@ -126,6 +174,7 @@ int main(int argc, char *argv[]) {
 
     SequentialBaseFloatMatrixReader feature_reader(feature_rspecifier);
     RandomAccessPosteriorReader targets_reader(targets_rspecifier);
+    RandomAccessPosteriorReader targets_reader2(targets_rspecifier2);
     RandomAccessBaseFloatVectorReader weights_reader;
     if (frame_weights != "") {
       weights_reader.Open(frame_weights);
@@ -133,25 +182,11 @@ int main(int argc, char *argv[]) {
 
     RandomizerMask randomizer_mask(rnd_opts);
     MatrixRandomizer feature_randomizer(rnd_opts);
-    PosteriorRandomizer targets_randomizer(rnd_opts);
+    PosteriorRandomizer targets_randomizer(rnd_opts), targets_randomizer2(rnd_opts);
     VectorRandomizer weights_randomizer(rnd_opts);
 
-    Xent xent;
-    Mse mse;
-	XentRegMCE xentregmce;
     
-    MultiTaskLoss multitask;
-    if (0 == objective_function.compare(0,9,"multitask")) {
-      // objective_function contains something like : 
-      // 'multitask,xent,2456,1.0,mse,440,0.001'
-      //
-      // the meaning is following:
-      // 'multitask,<type1>,<dim1>,<weight1>,...,<typeN>,<dimN>,<weightN>'
-      multitask.InitFromString(objective_function);
-      multitask.Set_Target_Interp(tgt_interp_mode, tgt_interp_wt);
-    }
-    
-    CuMatrix<BaseFloat> feats_transf, nnet_out, obj_diff;
+    CuMatrix<BaseFloat> feats_transf, nnet_out, nnet_out2, obj_diff;
     KALDI_LOG << "Objective Function = " << objective_function << "\n";
 
     Timer time;
@@ -182,7 +217,9 @@ int main(int argc, char *argv[]) {
         }
         // get feature / target pair
         Matrix<BaseFloat> mat = feature_reader.Value();
-        Posterior targets = targets_reader.Value(utt);
+        Posterior targets = targets_reader.Value(utt),
+                  targets2 = targets_reader2.Value(utt);
+
         // get per-frame weights
         Vector<BaseFloat> weights;
         if (frame_weights != "") {
@@ -220,6 +257,7 @@ int main(int argc, char *argv[]) {
         KALDI_ASSERT(feats_transf.NumRows() == targets.size());
         feature_randomizer.AddData(feats_transf);
         targets_randomizer.AddData(targets);
+        targets_randomizer2.AddData(targets2);
         weights_randomizer.AddData(weights);
         num_done++;
       
@@ -232,43 +270,86 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      KALDI_LOG << "Finished filling randomizer. num done = " << num_done << ", num_no_tgt_mat = " << num_no_tgt_mat <<  ", num_no_frame_wts = " << num_other_error << "\n";
+
       // randomize
       if (!crossvalidate && randomize) {
         const std::vector<int32>& mask = randomizer_mask.Generate(feature_randomizer.NumFrames());
         feature_randomizer.Randomize(mask);
         targets_randomizer.Randomize(mask);
+        targets_randomizer2.Randomize(mask);
         weights_randomizer.Randomize(mask);
       }
 
       // train with data from randomizers (using mini-batches)
       for ( ; !feature_randomizer.Done(); feature_randomizer.Next(),
                                           targets_randomizer.Next(),
+										  targets_randomizer2.Next(),
                                           weights_randomizer.Next()) {
         // get block of feature/target pairs
         const CuMatrixBase<BaseFloat>& nnet_in = feature_randomizer.Value();
-        const Posterior& nnet_tgt = targets_randomizer.Value();
+        const Posterior& nnet_tgt  = targets_randomizer.Value();
+        const Posterior& nnet_tgt2 = targets_randomizer2.Value();
         const Vector<BaseFloat>& frm_weights = weights_randomizer.Value();
+
+        KALDI_VLOG(4) << "Mini-batch loop" << "\n";
 
         // forward pass
         nnet.Propagate(nnet_in, &nnet_out);
+
+        KALDI_VLOG(4) << "nnet_in = " << nnet_in << "\n";
+        KALDI_VLOG(4) << "nnet_out = " << nnet_out << "\n";
 
         // evaluate objective function we've chosen
         // obj_diff contains the error matrix. For e.g., in the case of MSE or XENT, obj_diff(t,k) = y(t,k) - d(t,k)
         if (objective_function == "xent") {
           // gradients re-scaled by weights in Eval,
           xent.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff); 
-        } else if (objective_function == "xentregmce") {		  
-          // gradients re-scaled by weights in Eval,
-          xentregmce.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
         } else if (objective_function == "mse") {
           // gradients re-scaled by weights in Eval,
           mse.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
+        } else if (objective_function == "ts") {
+          Nnet nnet2(nnet);
+          Component::ComponentType last_type = nnet2.GetComponent(nnet.NumComponents()-1).GetType();
+          if (last_type == Component::kSoftmax) {
+            nnet2.GetComponent(nnet.NumComponents()-1).SetTemperature(softmax_temperature);
+            nnet2.Propagate(nnet_in, &nnet_out2);
+            ts.SetTemperature(softmax_temperature);
+            ts.SetRho(rho);
+          } else {
+        	KALDI_ERR << "Teacher-Student training not possible; Last component must be <Softmax>\n";
+          }
+          // gradients re-scaled by weights in Eval,
+          KALDI_VLOG(4) << "Temperature of nnet1 =  " << nnet.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+          KALDI_VLOG(4) << "Temperature of nnet2 =  " << nnet2.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+          ts.Eval2(frm_weights, nnet_out, nnet_out2, nnet_tgt, nnet_tgt2, &obj_diff);
         } else if ("multitask" == objective_function.substr(0,9)) {
-          // gradients re-scaled by weights in Eval,          
-          multitask.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
+          // gradients re-scaled by weights in Eval,
+          if (!teacherstudent) {
+        	multitask.Set_Target_Interp(tgt_interp_mode, rho);
+            multitask.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
+          } else {
+        	/* Teacher-Student loss supported in the first softmax only. Currently not supported for other softmaxes */
+        	Nnet nnet2(nnet);
+        	Component::ComponentType last_type = nnet2.GetComponent(nnet.NumComponents()-1).GetType();
+        	if (last_type == Component::kBlockSoftmax) {
+        	  /* Set the temperature of the first softmax */
+        	  nnet2.GetComponent(nnet.NumComponents()-1).SetTemperature(softmax_temperature);
+        	  nnet2.Propagate(nnet_in, &nnet_out2);
+        	  multitask.SetTemperature(softmax_temperature);
+        	  multitask.SetRho(rho);
+        	} else {
+              KALDI_ERR << "Teacher-Student training not possible; Last component must be <BlockSoftmax>\n";
+            }
+        	KALDI_VLOG(4) << "Temperature of nnet1 =  " << nnet.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+        	KALDI_VLOG(4) << "Temperature of nnet2 =  " << nnet2.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+        	multitask.Eval2(frm_weights, nnet_out, nnet_out2, nnet_tgt, nnet_tgt2, &obj_diff);
+          }
         } else {		  
           KALDI_ERR << "Unknown objective function code : " << objective_function;
         }
+
+        KALDI_VLOG(4) << "grad = " << obj_diff << "\n";
 
         // backward pass
         if (!crossvalidate) {
@@ -325,10 +406,10 @@ int main(int argc, char *argv[]) {
 
     if (objective_function == "xent") {
       KALDI_LOG << xent.Report();
-    } else if (objective_function == "xentregmce") {
-      KALDI_LOG << xentregmce.Report();
     } else if (objective_function == "mse") {
       KALDI_LOG << mse.Report();
+    } else if (objective_function == "ts") {
+      KALDI_LOG << ts.Report();
     } else if (0 == objective_function.compare(0,9,"multitask")) {
       KALDI_LOG << multitask.Report();
     } else {

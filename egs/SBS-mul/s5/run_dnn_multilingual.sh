@@ -31,7 +31,7 @@ splice=5         # temporal splicing
 splice_step=1    # stepsize of the splicing (1 == no gap between frames)
 test_block_csl=1
 
-# Multi-task training options
+# Multi-Task training options
 objective_csl="xent:xent:xent"
 lang_weight_csl="1.0:1.0:1.0"
 lat_dir_csl="-:-:-"    # pt or semisup lattices
@@ -44,12 +44,21 @@ parallel_nhl_opts=  # no. of hidden layers in the MTL tasks, Default 0 hidden la
 parallel_nhn_opts=  # no. of hidden neurons in the MTL tasks, Default 1024 neurons for all tasks
 randomizer_size=32768  # Maximum number of samples we want to have in memory at once
 minibatch_size=256     # num samples per mini-batch
-tgt_interp_mode="none" #"none|soft|hard"
-tgt_interp_wt=1.0
 use_gpu="wait"
 min_iters=3
 parallel_opts="--num-threads 6"
 skip_decode=false
+
+
+# Target Interpolation options
+tgt_interp_mode="none" #"none|soft|hard"
+rho=1   # a value in [0,1]
+
+# Teacher-Student training options
+teacher_student=false  # false|true, if teacher_student=true, then enable T-S training
+mlp_teacher=           # if teacher_student=true, then mlp_teacher must be set to a valid DNN
+softmax_temperature=   # if teacher_student=true, then softmax-temperature must be set to a value > 0
+rho_ts=                # if teacher_student=true, then rho must be set to a value [0, 1]
 
 # Frame weighting options
 threshold_default=0.7
@@ -196,10 +205,10 @@ semisup_present=$(echo ${data_type[@]}|grep -wc "semisup")
 unsup_present=$(echo ${data_type[@]}|grep -wc "unsup")
 echo "semisup = $semisup_present, unsup = $unsup_present"
 set -e
-if [ $stage -le 0 ]; then    
-  # Make local copy of data-dirs (while adding language-code),  
+if [ $stage -le 0 ]; then
+  # Make local copy of data-dirs (while adding language-code),
   tr90=""
-  cv10=""	  
+  cv10=""
   for i in $(seq 0 $[num_langs-1]); do
 	code=${lang_code[$i]}
 	dir=${data_dir[$i]}
@@ -323,6 +332,7 @@ ali_dim_csl =  $ali_dim_csl\n
 objective_function = $objective_function\n
 lat_dir_csl = $lat_dir_csl\n
 data_type_csl = $data_type_csl\n
+label_type_csl = $label_type_csl\n
 dup_and_merge_csl = $dup_and_merge_csl\n
 threshold_csl  = $threshold_csl\n
 test_block_csl = $test_block_csl\n
@@ -331,6 +341,16 @@ dnn init = $dnn_init\n
 remove last components = $remove_last_components\n
 renew_nnet_type = $renew_nnet_type\n
 renew_nnet_opts = $renew_nnet_opts\n
+
+# Target Interpolation options
+tgt_interp_mode  = $tgt_interp_mode\n
+rho              = $rho\n
+
+Teacher-Student options\n
+teacher_student = $teacher_student\n
+mlp_teacher     = $mlp_teacher\n
+softmax_temperature = $softmax_temperature\n
+rho_ts          = $rho_ts\n
 dnn out = $dir" > $dir/config
 
 # Make the features and targets for MTL
@@ -344,7 +364,8 @@ if [ $stage -le 1 ]; then
   ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
   $lang_code_csl $data_type_csl $label_type_csl $data_dir_csl  \
   $ali_dir_csl   $lat_dir_csl   $threshold_csl \
-  $dup_and_merge_csl $data $dir/ali-post  
+  $dup_and_merge_csl $data $dir/ali-post
+  
   
   # Step 2: Combine the task specific target posteriors and frame weights into a single MTL task,
   # pasting the ali's, adding language-specific offsets to the posteriors,
@@ -413,62 +434,78 @@ if [ $stage -le 2 ]; then
 	  nnet_init=$dir/nnet.init	  
       if [ $renew_nnet_type == "parallel" ]; then
         # create a generic network for each task
-	    local/nnet/renew_nnet_parallel.sh --remove-last-components $remove_last_components \
+	      local/nnet/renew_nnet_parallel.sh --remove-last-components $remove_last_components \
           ${renew_nnet_opts:+ $renew_nnet_opts} \
           ${parallel_nhl_opts:+ --parallel-nhl-opts "$parallel_nhl_opts"} ${parallel_nhn_opts:+ --parallel-nhn-opts "$parallel_nhn_opts"} \
           ${ali_dim_csl} ${dnn_init} ${nnet_init}
-	  elif [ $renew_nnet_type == "blocksoftmax" ]; then
-	    # create a softmax layer for each task
-	    local/nnet/renew_nnet_blocksoftmax.sh --remove-last-components $remove_last_components ${renew_nnet_opts} ${ali_dim_csl} ${dnn_init} ${nnet_init}
+	    elif [ $renew_nnet_type == "blocksoftmax" ]; then
+	      # create a softmax layer for each task
+	      local/nnet/renew_nnet_blocksoftmax.sh --remove-last-components $remove_last_components ${renew_nnet_opts} ${ali_dim_csl} ${dnn_init} ${nnet_init}
+      fi      
 	  else
 	    # create a single softmax layer across all tasks
 	    local/nnet/renew_nnet_softmax.sh --softmax-dim ${output_dim} --remove-last-components $remove_last_components ${renew_nnet_opts} ${ali_dir[0]}/final.mdl ${dnn_init} ${nnet_init}
 	  fi
-  
+    if ! $teacher_student; then  
       $cuda_cmd $dir/log/train_nnet.log \
-      local/nnet/train_pt.sh  ${nnet_init:+ --nnet-init "$nnet_init" --hid-layers 0} \
-		--learn-rate 0.008 \
-        ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
-        --labels-trainf "scp:$dir/ali-post/post_combined.scp" \
-        --labels-crossvf "scp:$dir/ali-post/post_combined.scp" \
-        --frame-weights  "scp:$dir/ali-post/frame_weights_combined.scp" \
-        --num-tgt $output_dim \
-        --copy-feats "false" \
-        --tgt-interp-mode ${tgt_interp_mode} --tgt-interp-wt ${tgt_interp_wt} \
-        --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-        --min-iters ${min_iters} --use-gpu ${use_gpu} \
-        --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
-        ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir			# ${ali_dir[0]} is used only to copy the HMM transition model
-        
-        # Experimental Code for stacked softmax; Uncomment to train stacked softmax
-        if false; then
-        local/nnet/make_activesoftmax_from_blocksoftmax.sh $dir/final.nnet "$(echo ${ali_dim_csl}|tr ':' ',')" $active_block $decode_dir/final.nnet
-        local/nnet/train_stackedsoftmax.sh  ${nnet_init:+ --nnet-init "$dir/final.nnet" --hid-layers 0} \
-		--learn-rate 0.008 \
-        ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
-        --labels-trainf "scp:$dir/ali-post/post_block_2.scp" \
-        --labels-crossvf "scp:$dir/ali-post/post_block_2.scp" \
-        --frame-weights  "scp:$dir/ali-post/frame_weights_block_2.scp" \
-        --num-tgt $output_dim \
-        --copy-feats "false" \
-        --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-        --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
-        ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir
-        fi
+        local/nnet/train_pt.sh  ${nnet_init:+ --nnet-init "$nnet_init" --hid-layers 0} \
+		      --learn-rate 0.008 \
+          ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
+          --labels-trainf "scp:$dir/ali-post/post_combined.scp" \
+          --labels-crossvf "scp:$dir/ali-post/post_combined.scp" \
+          --frame-weights  "scp:$dir/ali-post/frame_weights_combined.scp" \
+          --num-tgt $output_dim \
+          --copy-feats "false" \
+          --tgt-interp-mode ${tgt_interp_mode} --rho ${rho} \
+          --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+          --min-iters ${min_iters} --use-gpu ${use_gpu} \
+          --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
+          ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir			# ${ali_dir[0]} is used only to copy the HMM transition model
     else
       $cuda_cmd $dir/log/train_nnet.log \
-      local/nnet/train_pt.sh  --hid-layers $hid_layers --hid-dim $hid_dim  \
-		--learn-rate 0.008 \
-        ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
-        --labels-trainf "scp:$dir/ali-post/post_combined.scp" \
-        --labels-crossvf "scp:$dir/ali-post/post_combined.scp" \
-        --frame-weights  "scp:$dir/ali-post/frame_weights_combined.scp" \
-        --num-tgt $output_dim \
-        --copy-feats "false" \
-        --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-        --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
-        ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir			# ${ali_dir[0]} is used only to copy the HMM transition model        
-    fi    
+        local/nnet/train_pt.sh  ${nnet_init:+ --nnet-init "$nnet_init" --hid-layers 0} \
+          --learn-rate 0.008 \
+          ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
+          --labels-trainf "scp:$dir/ali-post/post_combined.scp" \
+          --labels-crossvf "scp:$dir/ali-post/post_combined.scp" \
+          --frame-weights  "scp:$dir/ali-post/frame_weights_combined.scp" \
+          --num-tgt $output_dim \
+          --copy-feats "false" \
+          --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher $nnet_init \
+          --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+          --min-iters ${min_iters} --use-gpu ${use_gpu} \
+          --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
+          ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir     # ${ali_dir[0]} is used only to copy the HMM transition model
+    fi
+    # Experimental Code for stacked softmax; Uncomment to train stacked softmax
+    # if false; then
+    #   local/nnet/make_activesoftmax_from_blocksoftmax.sh $dir/final.nnet "$(echo ${ali_dim_csl}|tr ':' ',')" $active_block $decode_dir/final.nnet
+    #   local/nnet/train_stackedsoftmax.sh  ${nnet_init:+ --nnet-init "$dir/final.nnet" --hid-layers 0} \
+      #   --learn-rate 0.008 \
+    #     ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
+    #     --labels-trainf "scp:$dir/ali-post/post_block_2.scp" \
+    #     --labels-crossvf "scp:$dir/ali-post/post_block_2.scp" \
+    #     --frame-weights  "scp:$dir/ali-post/frame_weights_block_2.scp" \
+    #     --num-tgt $output_dim \
+    #     --copy-feats "false" \
+    #     --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+    #     --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
+    #     ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir
+    #     fi
+    # else
+    #   $cuda_cmd $dir/log/train_nnet.log \
+    #   local/nnet/train_pt.sh  --hid-layers $hid_layers --hid-dim $hid_dim  \
+      #   --learn-rate 0.008 \
+    #     ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice --splice-step $splice_step \
+    #     --labels-trainf "scp:$dir/ali-post/post_combined.scp" \
+    #     --labels-crossvf "scp:$dir/ali-post/post_combined.scp" \
+    #     --frame-weights  "scp:$dir/ali-post/frame_weights_combined.scp" \
+    #     --num-tgt $output_dim \
+    #     --copy-feats "false" \
+    #     --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+    #     --train-tool "nnet-train-frmshuff --objective-function=$objective_function" \
+    #     ${data_tr90} ${data_cv10} lang-dummy ${ali_dir[0]} ${ali_dir[0]} $dir     # ${ali_dir[0]} is used only to copy the HMM transition model        
+    # fi    
     ;;
     dnn)
     # 6 hidden layers, 2048 simgoid neurons,
@@ -500,7 +537,7 @@ if [ $stage -le 3 ] && ! $skip_decode; then
         graph_dir=$exp_dir/graph_text_G_$L
 	    [[ -d $graph_dir ]] || { mkdir -p $graph_dir; utils/mkgraph.sh data/$L/lang_test_text_G $exp_dir $graph_dir || exit 1; }
 	    
-        for type in "eval"; do # "dev" "eval"
+        for type in "eval" "dev"; do # "dev" "eval"
           decode_dir=$dir/decode_block_${active_block}_${type}_text_G_$L
           if [[ $renew_nnet_type == "parallel" ]]; then
             # extract the active network from the parallel network

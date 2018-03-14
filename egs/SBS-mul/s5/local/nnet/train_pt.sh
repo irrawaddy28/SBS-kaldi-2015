@@ -48,7 +48,13 @@ labels_trainf=      # use these labels to train (override deafault pdf alignment
 labels_crossvf=
 num_tgt=           # force to use number of outputs in the MLP (default is autodetect)
 tgt_interp_mode="none" # "none|soft|hard"
-tgt_interp_wt=1.0
+rho=1.0 # a value in [0,1]
+
+# TEACHER-STUDENT TRAINING
+teacher_student=false  # false|true, if teacher_student=true, then enable T-S training
+mlp_teacher=           # if teacher_student=true, then mlp_teacher must be set to a valid DNN
+softmax_temperature=   # if teacher_student=true, then softmax-temperature must be set to a value > 0
+rho_ts=                # if teacher_student=true, then rho must be set to a value [0, 1]
 
 # TRAINING SCHEDULER
 learn_rate=0.008   # initial learning rate
@@ -446,20 +452,38 @@ fi
 ###### TRAIN ######
 echo
 echo "# RUNNING THE NN-TRAINING SCHEDULER"
-steps/nnet/train_scheduler.sh \
-  ${feature_transform:+ --feature-transform $feature_transform} \
-  --learn-rate $learn_rate \
-  --randomizer-seed $seed \
-  --tgt-interp-mode ${tgt_interp_mode} --tgt-interp-wt ${tgt_interp_wt} \
-  --max-iters $train_iters \
-  --randomizer-size ${randomizer_size} \
-  --minibatch-size ${minibatch_size} \
-  --min-iters ${min_iters} --use-gpu ${use_gpu} \
-  ${train_opts} \
-  ${train_tool:+ --train-tool "$train_tool"} \
-  ${frame_weights:+ --frame-weights "$frame_weights"} \
-  ${config:+ --config $config} \
-  $nnet_init "$feats_tr" "$feats_cv" "$labels_tr" "$labels_cv" $dir || exit 1
+if ! $teacher_student; then
+  steps/nnet/train_scheduler.sh \
+    ${feature_transform:+ --feature-transform $feature_transform} \
+    --learn-rate $learn_rate \
+    --randomizer-seed $seed \
+    --tgt-interp-mode ${tgt_interp_mode} --rho ${rho} \
+    --max-iters $train_iters \
+    --randomizer-size ${randomizer_size} \
+    --minibatch-size ${minibatch_size} \
+    --min-iters ${min_iters} --use-gpu ${use_gpu} \
+    ${train_opts} \
+    ${train_tool:+ --train-tool "$train_tool"} \
+    ${frame_weights:+ --frame-weights "$frame_weights"} \
+    ${config:+ --config $config} \
+    $nnet_init "$feats_tr" "$feats_cv" "$labels_tr" "$labels_cv" $dir || exit 1
+  else
+    steps/nnet/train_scheduler.sh \
+    ${feature_transform:+ --feature-transform $feature_transform} \
+    --learn-rate $learn_rate \
+    --randomizer-seed $seed \
+    --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher $nnet_init \
+    --max-iters $train_iters \
+    --randomizer-size ${randomizer_size} \
+    --minibatch-size ${minibatch_size} \
+    --min-iters ${min_iters} --use-gpu ${use_gpu} \
+    ${train_opts} \
+    ${train_tool:+ --train-tool "$train_tool"} \
+    ${frame_weights:+ --frame-weights "$frame_weights"} \
+    ${config:+ --config $config} \
+    $nnet_init "$feats_tr" "$feats_cv" "$labels_tr" "$labels_cv" $dir || exit 1
+  fi
+
 
 if $prepend_cnn; then
   echo "Preparing feature transform with CNN layers for RBM pre-training."

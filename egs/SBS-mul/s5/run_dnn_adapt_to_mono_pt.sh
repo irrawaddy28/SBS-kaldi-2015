@@ -183,7 +183,7 @@ if [ $stage -le 3 ]; then
 	   echo "not replacing the softmax layer of $precomp_dnn"
 	   cp ${precomp_dnn} ${nnet_init}
 	  fi
-	  echo "nnet_init = ${nnet_init}"	  
+	  echo "nnet_init = ${nnet_init}"
 	  #Initialize NN training with the hidden layers of a DNN
 	  $cuda_cmd $dir/log/train_nnet.log \
 	  local/nnet/train_pt.sh --nnet-init ${nnet_init} --hid-layers 0 \

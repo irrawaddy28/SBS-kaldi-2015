@@ -50,6 +50,8 @@ int main(int argc, char *argv[]) {
     po.Register("no-softmax", &no_softmax, "No softmax on MLP output (or remove it if found), the pre-softmax activations will be used as log-likelihoods, log-priors will be subtracted");
     bool apply_log = false;
     po.Register("apply-log", &apply_log, "Transform MLP output to logscale");
+    float softmax_temperature = 1.0;
+    po.Register("softmax-temperature", &softmax_temperature, "Apply temperature to softmax");
 
     std::string use_gpu="no";
     po.Register("use-gpu", &use_gpu, "yes|no|optional, only has effect if compiled with CUDA"); 
@@ -84,7 +86,8 @@ int main(int argc, char *argv[]) {
 
     Nnet nnet;
     nnet.Read(model_filename);
-    // optionally remove softmax,
+
+    // optionally remove softmax to capture logit values instead of posteriors
     Component::ComponentType last_type = nnet.GetComponent(nnet.NumComponents()-1).GetType();
     if (no_softmax) {
       if (last_type == Component::kSoftmax || last_type == Component::kBlockSoftmax) {
@@ -92,6 +95,15 @@ int main(int argc, char *argv[]) {
         nnet.RemoveComponent(nnet.NumComponents()-1);
       } else {
         KALDI_WARN << "Cannot remove softmax using --no-softmax=true, as the last component is " << Component::TypeToMarker(last_type);
+      }
+    }
+
+    // optionally apply temperature to softmax
+    if (softmax_temperature != 1.0) {
+      if (last_type == Component::kSoftmax || last_type == Component::kBlockSoftmax) {
+        nnet.GetComponent(nnet.NumComponents()-1).SetTemperature(softmax_temperature);
+      } else {
+    	KALDI_ERR << "Cannot set temperature for component type = " << last_type;
       }
     }
 

@@ -58,7 +58,7 @@ class Component {
 
     kActivationFunction = 0x0200, 
     kSoftmax, 
-    kBlockSoftmax, 
+    kBlockSoftmax,
     kSigmoid,
     kTanh,
     kDropout,
@@ -137,6 +137,9 @@ class Component {
   /// Optionally print some additional info
   virtual std::string Info() const { return ""; }
   virtual std::string InfoGradient() const { return ""; }
+
+  /// Set softmax temperature (implement only for Softmax and Blocksoftmax components)
+  virtual void SetTemperature(const BaseFloat temperature) { }
 
 
  /// Abstract interface for propagation/backpropagation 
