@@ -95,7 +95,7 @@ void Xent::Eval(const VectorBase<BaseFloat> &frame_weights,
     int32 num_rows = net_out.NumRows(), num_cols = net_out.NumCols();
 
     // Linearly interpolate targets for the primary task if interpolation wt < 1.0
-  	if (tgt_interp_mode_.compare("none") != 0 && rho_ > 0 && rho_ < 1.0) {
+  	if (tgt_interp_mode_.compare("none") != 0) {
       target_interp.Scale(rho_);
   	  if (tgt_interp_mode_.compare("soft") == 0) {
   	    // soft interpolation: wt*t_k + (1 - wt)*y_k
@@ -212,6 +212,19 @@ void Xent::Eval(const VectorBase<BaseFloat> &frame_weights,
   Eval(frame_weights, net_out, tgt_mat_, diff);
 }
 
+void Xent::Set_Target_Interp(const std::string tgt_interp_mode="none", const BaseFloat rho=1.0) {
+  if (rho_ < 0 || rho_ > 1.0) {
+    KALDI_ERR << "rho = " << rho_ << " is outside the acceptable range [0, 1]\n";
+  }
+
+  tgt_interp_mode_ =   tgt_interp_mode;
+
+  if (tgt_interp_mode.compare("none") == 0) {
+    rho_ = 1.0;
+  } else {
+    rho_  = rho;
+  }
+}
 
 std::string Xent::Report() {
   std::ostringstream oss;
@@ -720,6 +733,20 @@ void MultiTaskLoss::Eval2(const VectorBase<BaseFloat> &frame_weights,
 	KALDI_VLOG(4) << "diff = " << (*diff) << "\n";
 }
 
+
+void MultiTaskLoss::Set_Target_Interp(const std::string tgt_interp_mode="none", const BaseFloat rho=1.0) {
+  if (rho_ < 0 || rho_ > 1.0) {
+    KALDI_ERR << "rho = " << rho_ << " is outside the acceptable range [0, 1]\n";
+  }
+
+  tgt_interp_mode_ =   tgt_interp_mode;
+
+  if (tgt_interp_mode.compare("none") == 0) {
+    rho_ = 1.0;
+  } else {
+    rho_  = rho;
+  }
+}
 
 bool MultiTaskLoss::IsTS() {
 	return teacherstudent_ ;

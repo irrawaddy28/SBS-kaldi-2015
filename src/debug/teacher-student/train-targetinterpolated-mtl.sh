@@ -10,7 +10,7 @@ nnet_proto=exp/mtl/protoMTL    # proto
 nnet_init=exp/mtl/nnetMTL.in   # nnet
 nnet_out=exp/mtl/nnetMTL.out   # output of nnet
 post1=exp/mtl/post1.txt
-rho=0.2  #0.2
+rho=0.2  # orig 0.2
 
 # student proto design
 block_softmax_dims="3:3"
