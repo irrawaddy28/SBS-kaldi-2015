@@ -46,9 +46,7 @@ splice_step_bn_stage2=2 # splice step of AM-DNN trained using BN+FMLLR feats
 
 # Teacher-Student training options
 teacher_student=false  # false|true, if teacher_student=true, then enable T-S training
-#mlp_teacher=           # if teacher_student=true, then mlp_teacher must be set to a valid DNN
-#softmax_temperature=   # if teacher_student=true, then softmax-temperature must be set to a value > 0
-#rho_ts=                # if teacher_student=true, then rho must be set to a value [0, 1]
+# posterior_temperature=-1     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
 
 # end config
 
@@ -369,7 +367,7 @@ fi
 ## MTL trained with crowd PT senones and DT senones; MTL objective xent:xent
 if [[ $stage -le 40 ]]; then
 i=1   
-for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9
+for thresh in 0.2; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with frame weights above this threshold will be trained. Otherwise, ignored)
   for num_copies_2 in 0; do # 0 2 4 6
     for num_copies_1 in 2; do # 2 4
       if $use_bn; then
@@ -434,8 +432,9 @@ for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9
           if ! $teacher_student; then
             # "hard": new tgt = rho*ground truth + (1-rho)*(1-hot posterior of nnet)
             # "soft": new tgt = rho*ground truth + (1-rho)*(posterior of nnet)
+            # Note: When rho=1.0, there is no target interpolation. Hence, the training collapses to standard CE training.
             for tgt_interp_mode in "hard" "soft"; do
-              for rho in 1 0.8 0.6 0.4 0.2 0; do  # There is no target interpolation when rho = 1 (CE w.r.t ground truth labels) or rho = 0 (CE w.r.t. nnet posteriors)
+              for rho in 1 0.8 0.6 0.4 0.2; do
                 etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_${tgt_interp_mode}_rho${rho}
                 nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
                 mkdir -p $nnet_outdir
@@ -457,26 +456,29 @@ for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9
               done
             done
           else
-            for softmax_temperature in 1 2 3; do
-              for rho_ts in 0.8 0.6 0.4 0.2 1; do
-                etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_T${softmax_temperature}_rho${rho_ts}
-                nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
-                mkdir -p $nnet_outdir
-                [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
-                (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
-                  --objective-csl "ts:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s"   \
-                  --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher "${dnn_dir}/monosoftmax_dt/final.nnet" \
-                  --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-                  --threshold-csl "${thresh}:0.0" \
-                  --lat-dir-csl "${lats_pt_dir}:-" \
-                  --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
-                  ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-                  --min-iters ${min_iters} \
-                  ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
-                  "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
-                  "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
-                  ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
-                i=$((i%N_BG)); ((i++==0)) && wait
+            # Note: When posterior_temperature = 0 AND rho_ts = 1, T/S training collapses to standard CE training. When rho_ts = 1, there is no effect of varying softmax_temperature.
+            for posterior_temperature in 0 1 2 3; do
+              for softmax_temperature in 1 2 3; do
+                for rho_ts in  1 0.8 0.6 0.4 0.2; do
+                  etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_Tpost${posterior_temperature}_T${softmax_temperature}_rho${rho_ts}
+                  nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
+                  mkdir -p $nnet_outdir
+                  [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
+                  (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
+                    --objective-csl "ts:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s"   \
+                    --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher "${dnn_dir}/monosoftmax_dt/final.nnet" --posterior-temperature $posterior_temperature \
+                    --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+                    --threshold-csl "${thresh}:0.0" \
+                    --lat-dir-csl "${lats_pt_dir}:-" \
+                    --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
+                    ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+                    --min-iters ${min_iters} \
+                    ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
+                    "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
+                    "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
+                    ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
+                    i=$((i%N_BG)); ((i++==0)) && wait
+                done
               done
             done
           fi

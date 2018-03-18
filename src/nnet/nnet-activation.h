@@ -134,60 +134,13 @@ class BlockSoftmax : public Component {
 
   void PropagateFnc(const CuMatrixBase<BaseFloat> &in, CuMatrixBase<BaseFloat> *out) {
     // perform softmax per block:
-	KALDI_VLOG(3) << "Feedfwd through blocksoftmax " << "\n";
     for (int32 bl = 0; bl < block_dims.size(); bl++) {
       CuSubMatrix<BaseFloat> in_bl = in.ColRange(block_offset[bl], block_dims[bl]);
       CuSubMatrix<BaseFloat> out_bl = out->ColRange(block_offset[bl], block_dims[bl]);
       // y = e^(x_j/T)/sum_j(e^(x_j/T))
-      int32 num_frames = in_bl.NumRows(), num_pdf = in_bl.NumCols();
-      KALDI_VLOG(3) << " T = " << T_ << ", Block = " << bl << ", num_frames =  " << num_frames << ", num_pdf =  " << num_pdf << "\n";
-
-//      Deep copy
-//      CuMatrix<BaseFloat> dummy(num_frames, num_pdf, kSetZero);
-//      CuSubMatrix<BaseFloat> inT(dummy, 0, num_frames, 0, num_pdf);
-//      inT.CopyFromMat(in_bl);
-
-//       Shallow copy
-//       CuSubMatrix<BaseFloat> inT(in_bl);
-
-//       if (T_ > 1) {
-//        KALDI_VLOG(3) << "in_bl (before scale) = " << in_bl << "\n";
-//        KALDI_VLOG(3) << "inT (before scale) = " << inT << "\n";
-//       }
-//       if (bl == 0) inT.Scale(1.0/T_);  // Temperature only for the first softmax
-//       if (T_ > 1) {
-//       	KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
-//       	KALDI_VLOG(3) << "inT   (after scale) = " << inT << "\n";
-//       }
-//       out_bl.ApplySoftMaxPerRow(inT);  //  out_bl.ApplySoftMaxPerRow(in_bl)
-//       KALDI_VLOG(3) << "Done out_bl.ApplySoftMaxPerRow(inT)" << "\n";
-
-     out_bl.CopyFromMat(in_bl);
-     if (bl == 0) out_bl.Scale(1.0/T_);  // Temperature only for the first softmax
-     if (T_ > 1) {
-       // KALDI_VLOG(3) << "in  (after scale) =  " << in.ColRange(block_offset[bl], block_dims[bl]) << "\n";
-       KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
-       KALDI_VLOG(3) << "inT   (after scale) = " << out_bl << "\n";
-     }
+      out_bl.CopyFromMat(in_bl);
+      if (bl == 0) out_bl.Scale(1.0/T_);  // Temperature only for the first softmax
      out_bl.ApplySoftMaxPerRow(out_bl);  //  out_bl.ApplySoftMaxPerRow(in_bl)
-
-//      CuMatrix<BaseFloat> inT(in_bl);
-//      if (T_ > 1) {
-//        KALDI_VLOG(3) << "in_bl (before scale) = " << in_bl << "\n";
-//        KALDI_VLOG(3) << "inT (before scale) = " << inT << "\n";
-//      }
-//      if (bl == 0) inT.Scale(1.0/T_);  // Temperature only for the first softmax
-//      if (T_ > 1) {
-//       	KALDI_VLOG(3) << "in_bl (after scale) = " << in_bl << "\n";
-//       	KALDI_VLOG(3) << "inT   (after scale) = " << inT << "\n";
-//      }
-//      out_bl.ApplySoftMaxPerRow(inT);
-
-
-//      if (T_ > 1) {
-//    	KALDI_VLOG(3) << "out_bl = " << out_bl << "\n";
-//      }
-      KALDI_VLOG(3) << "Ready to exit" << "\n";
     }
   }
 

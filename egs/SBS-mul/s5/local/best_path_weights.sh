@@ -38,7 +38,11 @@ set -e
 cmd=run.pl
 stage=-10
 write_ali_dir=true
-acwt=0.1
+
+# Modify posteriors by temperature
+posterior_temperature=0     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
+
+acwt=0.1   # training lattice will be scaled by this value
 #end configuration section.
 
 help_message="Usage: "$(basename $0)" [options] <decode-dir1>[:weight] <decode-dir2>[:weight] [<decode-dir3>[:weight] ... ] <out-dir>
@@ -87,7 +91,7 @@ if [ $stage -lt -1 ]; then
   $cmd JOB=1:$nj $out_decode/log/best_path.JOB.log \
     lattice-best-path --acoustic-scale=$acwt \
     "ark,s,cs:gunzip -c $decode_dir/lat.JOB.gz |" \
-    ark:/dev/null "ark:| gzip -c > $out_decode/ali.JOB.gz" || exit 1
+    ark:/dev/null "ark,t:| gzip -c > $out_decode/ali.JOB.gz" || exit 1
 fi
 
 weights_sum=0.0
@@ -134,7 +138,7 @@ for i in `seq 0 $[num_sys-1]`; do
     $cmd JOB=1:$nj $dir/log/get_post.$i.JOB.log \
       lattice-to-post --acoustic-scale=$acwt \
       "ark,s,cs:gunzip -c $decode_dir/lat.JOB.gz|" ark:- \| \
-      post-to-pdf-post $model ark,s,cs:- ark:- \| \
+      post-to-pdf-post $model ark,s,cs:- ark:- \| apply-temp-on-post --T=$posterior_temperature  ark:- ark:- \| \
       get-post-on-ali ark,s,cs:- "ark,s,cs:gunzip -c $out_decode/ali.JOB.gz | convert-ali $dir/final.mdl $model $tree ark,s,cs:- ark:- | ali-to-pdf $model ark,s,cs:- ark:- |" "ark,t:| gzip -c > $out_decode/weights.$i.JOB.gz" || exit 1
   fi
 done

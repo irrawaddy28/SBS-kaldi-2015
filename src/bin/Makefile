@@ -23,7 +23,7 @@ BINFILES = align-equal align-equal-compiled acc-tree-stats \
         build-pfile-from-ali get-post-on-ali tree-info am-info \
         vector-sum matrix-sum-rows est-pca sum-lda-accs sum-mllt-accs \
         transform-vec align-text \
-        get-phones-on-ali get-phones-on-ali-ext compile-train-graphs-fsts-pt thresh-vector
+        get-phones-on-ali get-phones-on-ali-ext compile-train-graphs-fsts-pt thresh-vector apply-temp-on-post
 
 
 OBJFILES =

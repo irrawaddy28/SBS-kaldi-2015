@@ -6,7 +6,13 @@ threshold=0.7   # If provided, use frame thresholding -- keep only frames whose
                 # best path posterior is above this value.  
 use_soft_counts=true    # Use soft-posteriors as targets for PT data
 disable_upper_cap=true
-acwt=0.2
+
+# Modify posteriors by temperature
+posterior_temperature=0     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
+
+
+acwt=0.2  # training lattice will be scaled by this value
+
 parallel_opts="--num-threads 6"
 # End of config.
 
@@ -37,8 +43,9 @@ for f in $required; do
   [ ! -f $f ] && echo "$0: Missing $f" && exit 1;
 done
 
-# Get frame weights as the posteriors of the best path in the lattice
- local/best_path_weights.sh --acwt $acwt  $decode_dir $best_path_dir || exit 1   
+# Get frame weights: Find the best path in the lattice; then find the posteriors (from the lattice) corresponding to the alignment
+# in the best path. Those posteriors become the frame weights.
+ local/best_path_weights.sh --acwt $acwt --posterior-temperature $posterior_temperature   $decode_dir $best_path_dir || exit 1
 	 
 # Get frame posteriors from lattice. Multiple posteriors per frame is possible.
  nj=$(cat $best_path_dir/num_jobs)
@@ -51,7 +58,7 @@ done
    # Get soft posteriors from the lattice of target language
    $train_cmd JOB=1:$nj $postdir/get_soft_post.JOB.log \
      lattice-to-post --acoustic-scale=$acwt "ark:gunzip -c $decode_dir/lat.JOB.gz |" ark:- \| \
-     post-to-pdf-post $gmmdir/final.mdl ark:- \
+     post-to-pdf-post $gmmdir/final.mdl ark:- ark:- \| apply-temp-on-post --T=$posterior_temperature ark:- \
      ark,t,scp:$postdir/post.JOB.ark,$postdir/post.JOB.scp || exit 1
  fi
  

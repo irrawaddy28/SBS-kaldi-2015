@@ -11,6 +11,9 @@ acwt=0.2
 use_soft_counts=true    # Use soft-posteriors as targets for PT data
 disable_upper_cap=true
 
+# Modify posteriors by temperature
+posterior_temperature=0     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
+
 cmvn_opts=      # speaker specific cmvn for i/p features. For mean+var normalization, use "--norm-means=true --norm-vars=true"
 delta_order=0   # Use 1 for delta, 2 for delta-delta
 splice=5
@@ -197,6 +200,9 @@ for i in $(seq 0 $[n_tasks-1]); do
 
     
     postsubdir=local/${lang}_${dtype}_${ltype}/post_train_thresh${thresh:+_$thresh}
+    if [ "$dtype" == "pt" -o "$dtype" == "semisup" ]; then
+      postsubdir=${postsubdir}_Tpost${posterior_temperature}
+    fi
     postdir=$dir/$postsubdir
     [ -d $postdir ] || mkdir -p $postdir
     best_path_dir=`dirname $postdir`/bestpath_ali
@@ -212,7 +218,7 @@ for i in $(seq 0 $[n_tasks-1]); do
       decode_dir=$lat
 	  
       local/posts_and_best_path_weights.sh --acwt $acwt --threshold $thresh \
-	    --use-soft-counts $use_soft_counts --disable-upper-cap $disable_upper_cap \
+	    --use-soft-counts $use_soft_counts --disable-upper-cap $disable_upper_cap --posterior-temperature $posterior_temperature  \
         $ali $decode_dir $best_path_dir $postdir
     elif [ "$dtype" == "dt" ]; then
       # dt data

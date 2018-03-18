@@ -60,6 +60,9 @@ mlp_teacher=           # if teacher_student=true, then mlp_teacher must be set t
 softmax_temperature=   # if teacher_student=true, then softmax-temperature must be set to a value > 0
 rho_ts=                # if teacher_student=true, then rho must be set to a value [0, 1]
 
+# Modify posteriors by temperature
+posterior_temperature=0     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
+
 # Frame weighting options
 threshold_default=0.7
 threshold_csl=   # If provided, use frame thresholding -- keep only frames whose
@@ -360,7 +363,7 @@ if [ $stage -le 1 ]; then
   # (a) Features: $data/combined_tr90/feats.scp, $data/combined_cv10/feats.scp
   # (b) Target posteriors: $dir/ali-post/post_task_<d>.scp, where d = 1, 2, 3  etc
   # (c) Frame weights: $dir/ali-post/frame_weights_task_<d>.scp, where d = 1, 2, 3  etc
-  local/make_task_scps.sh --acwt $acwt --use-soft-counts $use_soft_counts --disable-upper-cap $disable_upper_cap \
+  local/make_task_scps.sh --acwt $acwt --use-soft-counts $use_soft_counts --disable-upper-cap $disable_upper_cap --posterior-temperature $posterior_temperature \
   ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
   $lang_code_csl $data_type_csl $label_type_csl $data_dir_csl  \
   $ali_dir_csl   $lat_dir_csl   $threshold_csl \
