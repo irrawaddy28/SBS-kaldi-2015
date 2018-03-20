@@ -199,10 +199,7 @@ for i in $(seq 0 $[n_tasks-1]); do
 
 
     
-    postsubdir=local/${lang}_${dtype}_${ltype}/post_train_thresh${thresh:+_$thresh}
-    if [ "$dtype" == "pt" -o "$dtype" == "semisup" ]; then
-      postsubdir=${postsubdir}_Tpost${posterior_temperature}
-    fi
+    postsubdir=local/${lang}_${dtype}_${ltype}/post_train_thresh${thresh:+_$thresh}    
     postdir=$dir/$postsubdir
     [ -d $postdir ] || mkdir -p $postdir
     best_path_dir=`dirname $postdir`/bestpath_ali

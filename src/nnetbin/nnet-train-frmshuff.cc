@@ -309,11 +309,15 @@ int main(int argc, char *argv[]) {
           // gradients re-scaled by weights in Eval,
           mse.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
         } else if (objective_function == "ts") {
-          Nnet nnet2(nnet);
-          Component::ComponentType last_type = nnet2.GetComponent(nnet.NumComponents()-1).GetType();
+          Component* last_component = nnet.GetComponent(nnet.NumComponents()-1).Copy(); // deep copy
+          Component::ComponentType last_type = last_component->GetType();
           if (last_type == Component::kSoftmax) {
-            nnet2.GetComponent(nnet.NumComponents()-1).SetTemperature(softmax_temperature);
-            nnet2.Propagate(nnet_in, &nnet_out2);
+            // Set the temperature of softmax
+        	last_component->SetTemperature(softmax_temperature);
+        	// Get the logit values of the student nnet
+        	const CuMatrix<BaseFloat> logit = nnet.GetPropagateBuf(nnet.NumComponents()-1);
+        	// Feedforward the logit through the softmax
+        	last_component->Propagate(logit, &nnet_out2);
             ts.SetTemperature(softmax_temperature);
             ts.SetRho(rho);
           } else {
@@ -321,7 +325,7 @@ int main(int argc, char *argv[]) {
           }
           // gradients re-scaled by weights in Eval,
           KALDI_VLOG(4) << "Temperature of nnet1 =  " << nnet.GetComponent(nnet.NumComponents()-1).Info() << "\n";
-          KALDI_VLOG(4) << "Temperature of nnet2 =  " << nnet2.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+          KALDI_VLOG(4) << "Temperature of nnet2 =  " << last_component->Info() << "\n";
           ts.Eval2(frm_weights, nnet_out, nnet_out2, nnet_tgt, nnet_tgt2, &obj_diff);
         } else if ("multitask" == objective_function.substr(0,9)) {
           // gradients re-scaled by weights in Eval,
@@ -329,20 +333,24 @@ int main(int argc, char *argv[]) {
         	multitask.Set_Target_Interp(tgt_interp_mode, rho);
             multitask.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
           } else {
-        	/* Teacher-Student loss supported in the first softmax only. Currently not supported for other softmaxes */
-        	Nnet nnet2(nnet);
-        	Component::ComponentType last_type = nnet2.GetComponent(nnet.NumComponents()-1).GetType();
+        	// Teacher-Student loss supported in the first softmax only. Not supported for other softmaxes
+        	Component* last_component = nnet.GetComponent(nnet.NumComponents()-1).Copy(); // deep copy
+        	Component::ComponentType last_type = last_component->GetType();
         	if (last_type == Component::kBlockSoftmax) {
-        	  /* Set the temperature of the first softmax */
-        	  nnet2.GetComponent(nnet.NumComponents()-1).SetTemperature(softmax_temperature);
-        	  nnet2.Propagate(nnet_in, &nnet_out2);
+        	  // Set the temperature of softmax
+        	  last_component->SetTemperature(softmax_temperature);
+        	  // Get the logit values of the student nnet
+        	  const CuMatrix<BaseFloat> logit = nnet.GetPropagateBuf(nnet.NumComponents()-1);
+        	  // Feedforward the logit through the softmax
+        	  last_component->Propagate(logit, &nnet_out2);
+        	  // Set the temperature and rho parameters for the loss class
         	  multitask.SetTemperature(softmax_temperature);
         	  multitask.SetRho(rho);
         	} else {
               KALDI_ERR << "Teacher-Student training not possible; Last component must be <BlockSoftmax>\n";
             }
         	KALDI_VLOG(4) << "Temperature of nnet1 =  " << nnet.GetComponent(nnet.NumComponents()-1).Info() << "\n";
-        	KALDI_VLOG(4) << "Temperature of nnet2 =  " << nnet2.GetComponent(nnet.NumComponents()-1).Info() << "\n";
+        	KALDI_VLOG(4) << "Temperature of nnet2 =  " << last_component->Info() << "\n";
         	multitask.Eval2(frm_weights, nnet_out, nnet_out2, nnet_tgt, nnet_tgt2, &obj_diff);
           }
         } else {		  

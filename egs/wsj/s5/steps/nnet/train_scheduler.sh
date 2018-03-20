@@ -134,7 +134,7 @@ if $teacher_student; then
  utils/split_scp.pl $dir/train.scp $split_scps
  for n in $(seq $nj); do
   feats_split=$(echo $feats_tr|sed "s:train.scp:train.${n}.scp:g")
-  nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_split" ark:- |\
+  nnet-forward --use-gpu=$use_gpu --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_split" ark:- |\
     feat-to-post ark:- ark,scp:$postdir/post_teacher_tr.${n}.ark,$postdir/post_teacher_tr.${n}.scp || exit 1
  done
  cat $postdir/post_teacher_tr.*.scp > $postdir/post_teacher_tr.scp
@@ -149,24 +149,15 @@ if $teacher_student; then
  utils/split_scp.pl $dir/cv.scp $split_scps
  for n in $(seq $nj); do
   feats_split=$(echo $feats_cv|sed "s:cv.scp:cv.${n}.scp:g")
-  nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_split" ark:- |\
+  nnet-forward --use-gpu=$use_gpu --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_split" ark:- |\
     feat-to-post ark:- ark,scp:$postdir/post_teacher_cv.${n}.ark,$postdir/post_teacher_cv.${n}.scp || exit 1
  done
  cat $postdir/post_teacher_cv.*.scp > $postdir/post_teacher_cv.scp
  rm $split_scps $postdir/post_teacher_cv.*.scp
  labels_teacher_cv="scp:$postdir/post_teacher_cv.scp"
-
-  #labels_teacher_tr="$dir/ali-post/post_teacher_tr.scp"
-  #labels_teacher_cv="$dir/ali-post/post_teacher_cv.scp"
-  #nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_tr" ark:- |\
-  #  feat-to-post ark:- ark,scp:$dir/ali-post/post_teacher_tr.ark,$labels_teacher_tr
-  #nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  "$feats_cv" ark:- |\
-  #  feat-to-post ark:- ark,scp:$dir/ali-post/post_teacher_cv.ark,$labels_teacher_cv
-  #labels_teacher_tr="scp:$labels_teacher_tr"
-  #labels_teacher_cv="scp:$labels_teacher_cv"
   
-  #labels_teacher_tr="ark:nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  \"$feats_tr\" ark:- | feat-to-post ark:- ark:- |"
-  #labels_teacher_cv="ark:nnet-forward --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  \"$feats_cv\" ark:- | feat-to-post ark:- ark:- |"
+  #labels_teacher_tr="ark:nnet-forward --use-gpu=$use_gpu --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  \"$feats_tr\" ark:- | feat-to-post ark:- ark:- |"
+  #labels_teacher_cv="ark:nnet-forward --use-gpu=$use_gpu --softmax-temperature=$softmax_temperature ${feature_transform:+ --feature-transform=$feature_transform} $mlp_teacher  \"$feats_cv\" ark:- | feat-to-post ark:- ark:- |"
 fi
 
 # cross-validation on original network

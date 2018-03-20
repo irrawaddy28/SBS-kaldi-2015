@@ -138,9 +138,19 @@ class BlockSoftmax : public Component {
       CuSubMatrix<BaseFloat> in_bl = in.ColRange(block_offset[bl], block_dims[bl]);
       CuSubMatrix<BaseFloat> out_bl = out->ColRange(block_offset[bl], block_dims[bl]);
       // y = e^(x_j/T)/sum_j(e^(x_j/T))
+
+      KALDI_VLOG(4) << " T = " << T_ << ", Block = " << bl << ", num_frames =  " << in_bl.NumRows() << ", num_pdf =  " << in_bl.NumCols() << "\n";
       out_bl.CopyFromMat(in_bl);
+      if (T_ != 1) {
+        KALDI_VLOG(4) << "in_bl  (before scale) = " << in_bl << "\n";
+        KALDI_VLOG(4) << "out_bl (before scale) = " << out_bl << "\n";
+      }
       if (bl == 0) out_bl.Scale(1.0/T_);  // Temperature only for the first softmax
-     out_bl.ApplySoftMaxPerRow(out_bl);  //  out_bl.ApplySoftMaxPerRow(in_bl)
+      if (T_ != 1) {
+        KALDI_VLOG(4) << "in_bl  (after scale) = " << in_bl << "\n";
+        KALDI_VLOG(4) << "out_bl (after scale) = " << out_bl << "\n";
+      }
+      out_bl.ApplySoftMaxPerRow(out_bl);  //  out_bl.ApplySoftMaxPerRow(in_bl)
     }
   }
 

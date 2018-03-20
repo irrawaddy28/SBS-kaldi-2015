@@ -536,10 +536,8 @@ if [ $stage -le 3 ] && ! $skip_decode; then
     dnn_small)
       echo "Decoding $L"
       for active_block in ${test_block[@]}; do  #$(seq 1 $num_langs)
-        
         graph_dir=$exp_dir/graph_text_G_$L
-	    [[ -d $graph_dir ]] || { mkdir -p $graph_dir; utils/mkgraph.sh data/$L/lang_test_text_G $exp_dir $graph_dir || exit 1; }
-	    
+        [[ -d $graph_dir ]] || { mkdir -p $graph_dir; utils/mkgraph.sh data/$L/lang_test_text_G $exp_dir $graph_dir || exit 1; }    
         for type in "eval" "dev"; do # "dev" "eval"
           decode_dir=$dir/decode_block_${active_block}_${type}_text_G_$L
           if [[ $renew_nnet_type == "parallel" ]]; then
@@ -547,20 +545,20 @@ if [ $stage -le 3 ] && ! $skip_decode; then
             local/nnet/make_activesoftmax_from_parallel.sh --remove-last-components $remove_last_components $dir/final.nnet $active_block $decode_dir/final.nnet
           elif [[ $renew_nnet_type == "blocksoftmax" ||  -z $renew_nnet_type ]]; then
             # extract the active softmax from block softmax
-		    local/nnet/make_activesoftmax_from_blocksoftmax.sh $dir/final.nnet "$(echo ${ali_dim_csl}|tr ':' ',')" $active_block $decode_dir/final.nnet
-		  else
-		    echo "Decoding with $renew_nnet_type not supported" && exit 1
-		  fi		  
-		  # make other necessary dependencies available
+            local/nnet/make_activesoftmax_from_blocksoftmax.sh $dir/final.nnet "$(echo ${ali_dim_csl}|tr ':' ',')" $active_block $decode_dir/final.nnet
+          else
+            echo "Decoding with $renew_nnet_type not supported" && exit 1
+          fi
+          # make other necessary dependencies available
           (cd $decode_dir; ln -s ../{final.mdl,final.feature_transform,norm_vars,cmvn_opts,delta_opts} . ;)
-          # create "prior_counts"          
+          # create "prior_counts"
           steps/nnet/make_priors.sh --use-gpu ${use_gpu} $data_tr90 $decode_dir
           # finally, decode
           (steps/nnet/decode.sh --nj 4 ${parallel_opts} --cmd "$decode_cmd" --use-gpu ${use_gpu} --config conf/decode_dnn.config --acwt 0.2 --srcdir $decode_dir \
-	        $graph_dir $(dirname ${data_dir[0]})/$type $decode_dir || exit 1;) &
-	    done
-	    	    
-	  done
+            $graph_dir $(dirname ${data_dir[0]})/$type $decode_dir || exit 1;) &
+        done
+      done
+      wait 
     ;;
     *)
       echo "Decoding not supported for --nnet-type $nnet_type"; exit 1;

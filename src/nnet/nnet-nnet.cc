@@ -328,6 +328,12 @@ void Nnet::GetGradient(Vector<BaseFloat>* grad_copy) const {
 }
 
 
+const CuMatrix<BaseFloat> Nnet::GetPropagateBuf(int32 component){
+  KALDI_ASSERT(component < NumComponents());
+  CuMatrix<BaseFloat> buf(propagate_buf_[component]); // deep copy
+  return buf;
+}
+
 int32 Nnet::NumParams() const {
   int32 n_params = 0;
   for(int32 n=0; n<components_.size(); n++) {
