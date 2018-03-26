@@ -334,7 +334,7 @@ int main(int argc, char *argv[]) {
             multitask.Eval(frm_weights, nnet_out, nnet_tgt, &obj_diff);
           } else {
         	// Teacher-Student loss supported in the first softmax only. Not supported for other softmaxes
-        	Component* last_component = nnet.GetComponent(nnet.NumComponents()-1).Copy(); // deep copy
+        	Component* last_component = nnet.GetComponent(nnet.NumComponents()-1).Copy();
         	Component::ComponentType last_type = last_component->GetType();
         	if (last_type == Component::kBlockSoftmax) {
         	  // Set the temperature of softmax

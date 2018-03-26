@@ -149,12 +149,12 @@ for x in train dev eval; do
             local/sbs_create_phntrans_CA.py --utts $tmpdir/downsample/${x}_basenames_wav --transdir "$TRANSDIR/${full_name}" | sed 's/g/ɡ/g' | LC_ALL=en_US.UTF-8 local/uniphone.py | sed 's/ *sil */ /g' | sed 's/  \+/ /g' | sed 's/ \+$//g' | sed 's/^ \+//g' > $tmpdir/${LCODE}_${x}.trans
             ;;
         AM)
-			local/sbs_create_phntrans_AM.sh $tmpdir/downsample/${x}_basenames_wav conf/${full_name}/g2pmap.txt $TRANSDIR/${full_name}/${full_name}.utf8.txt | LC_ALL=en_US.UTF-8 local/uniphone.py > $tmpdir/${LCODE}_${x}.trans
-			;;
-		DI)
-			local/sbs_create_phntrans_DI.sh $tmpdir/downsample/${x}_basenames_wav conf/${full_name}/g2pmap.txt $TRANSDIR/${full_name}/${full_name}.utf8.txt | LC_ALL=en_US.UTF-8 local/uniphone.py > $tmpdir/${LCODE}_${x}.trans
-			;;			
-        *) 
+            local/sbs_create_phntrans_AM.sh $tmpdir/downsample/${x}_basenames_wav conf/${full_name}/g2pmap.txt $TRANSDIR/${full_name}/${full_name}.utf8.txt | LC_ALL=en_US.UTF-8 local/uniphone.py > $tmpdir/${LCODE}_${x}.trans
+            ;;
+        DI)
+            local/sbs_create_phntrans_DI.sh $tmpdir/downsample/${x}_basenames_wav conf/${full_name}/g2pmap.txt $TRANSDIR/${full_name}/${full_name}.utf8.txt | LC_ALL=en_US.UTF-8 local/uniphone.py > $tmpdir/${LCODE}_${x}.trans
+            ;;
+        *)
             echo "Unknown language code $LCODE." && exit 1
     esac
     #################################################
