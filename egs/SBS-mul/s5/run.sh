@@ -486,9 +486,9 @@ for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with frame weights abov
             done # tgt_interp_mode
           else
             # Note: When posterior_temperature = 0 AND rho_ts = 1, T/S training collapses to standard CE training. When rho_ts = 1, there is no effect of varying softmax_temperature.
-            for posterior_temperature in 1 2 1.5 0.5; do # modify posterior of PTs by applying a temperature softmax on the PTs
+            for posterior_temperature in 1 2 3; do # modify posterior of PTs by applying a temperature softmax on the PTs
               for softmax_temperature in 1 2 3; do
-                for rho_ts in  0.6 0.4 0.2; do
+                for rho_ts in  0.8 0.6 0.4 0.2; do
                   etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_Tpt${posterior_temperature}_T${softmax_temperature}_rho${rho_ts}
                   nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
                   mkdir -p $nnet_outdir
