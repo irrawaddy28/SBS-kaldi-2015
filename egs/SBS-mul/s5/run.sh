@@ -30,30 +30,16 @@ splice=5
 splice_step=1
 min_iters=3
 
-# Bottleneck configurations
-use_bn=false
-skip_selftrain=false
-hid_layers_bn_stage1=6    # number of hidden layers in BN-DNN
-hid_dim_bn_stage1=1024    # dim of hidden layers of BN-DNN
-bn_layer=5         # the index of the layer where BN is placed. Using 1-based indexing where W_{i/p-hidden} = W_1
-bn_dim=40          # dim of BN layer
-remove_last_components=4 # number of components to remove from the top of BN-DNN to expose the BN layer
-hid_layers_bn_stage2=4  # number of hidden layers of AM-DNN trained using BN+FMLLR feats
-hid_dim_bn_stage2=1024  # dim of hidden layers of AM-DNN trained using BN+FMLLR feats
-splice_bn_stage2=2      # splice size of AM-DNN trained using BN+FMLLR feats
-splice_step_bn_stage2=2 # splice step of AM-DNN trained using BN+FMLLR feats
-
-
 # Teacher-Student training options
-teacher_student=false  # false|true, if teacher_student=true, then enable T-S training
-# posterior_temperature=-1     # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
+# teacher_student=false       # false|true, if teacher_student=true, then enable T-S training
+# posterior_temperature=-1  # Apply softmax with temperature to posteriors in PT/semisup. This is done only when temp > 0
 
 # end config
 
 . utils/parse_options.sh || exit 1;
 
 
-# Usage: ./run.sh "AM AR CA DI HG MD" "SW"
+# Usage:  nohup ./run.sh "AM AR CA DI HG MD" "SW" > run.log 2>&1 &
 TRAIN_LANG=$1  # Example: "AM AR CA HG MD SW"
 TEST_LANG=$2   # Example: "DI"
 UNILANG_CODE=$(echo $TRAIN_LANG |sed 's/ /_/g')
@@ -86,25 +72,25 @@ fi
 # =========================================
 
 # =========================================
-## Train and test a monolingual GMM-HMM (exp/monolingual/tri3b)
-## using monolingual DT (deterministic transcripts)
-# if [[ $stage -le 2 ]]; then
-#   ./run_hmm_monolingual.sh --stage 1 "${TEST_LANG}"
-# fi
+# Train and test a monolingual GMM-HMM (exp/monolingual/tri3b)
+# using monolingual DT (deterministic transcripts)
+if [[ $stage -le 2 ]]; then
+  ./run_hmm_monolingual.sh --stage 1 "${TEST_LANG}"
+fi
 # =========================================
 
 # =========================================
-## Train and test a monolingual DNN system (exp/monolingual/dnn4_pretrain-dbn_dnn)
-## using monolingual DT (deterministic transcripts)
-# if [[ $stage -le 3 ]]; then
-#   ./run_dnn_monolingual.sh ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-#     "${TEST_LANG}" \
-#     exp/monolingual/tri3b/${TEST_LANG}  \
-#     exp/monolingual/tri3b_ali/${TEST_LANG} \
-#     exp/monolingual/data-fmllr-tri3b/${TEST_LANG} \
-#     exp/monolingual/dnn4_pretrain-dbn/${TEST_LANG}/indbn \
-#     exp/monolingual/dnn4_pretrain-dbn_dnn/${TEST_LANG}/monosoftmax_dt
-# fi
+# Train and test a monolingual DNN system (exp/monolingual/dnn4_pretrain-dbn_dnn)
+# using monolingual DT (deterministic transcripts)
+if [[ $stage -le 3 ]]; then
+  ./run_dnn_monolingual.sh ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+    "${TEST_LANG}" \
+    exp/monolingual/tri3b/${TEST_LANG}  \
+    exp/monolingual/tri3b_ali/${TEST_LANG} \
+    exp/monolingual/data-fmllr-tri3b/${TEST_LANG} \
+    exp/monolingual/dnn4_pretrain-dbn/${TEST_LANG}/indbn \
+    exp/monolingual/dnn4_pretrain-dbn_dnn/${TEST_LANG}/monosoftmax_dt
+fi
 # =========================================
 
 # =========================================
@@ -112,47 +98,11 @@ if [[ $stage -le 4 ]]; then
 ## Train a multilingual DNN system using multilingual DT of training languages. Use tri3c_ali as targets.
 ## This nnet, trained using DT, is used to provide a good initialization of the shared hidden layers (SHLs) using DBN pre-training. If we start training
 ## with both PT + DT, the SHLs may be unreliable.
-  if $use_bn; then
-    # train a BN-DNN    
-    # w/ random init
-    ./run_dnn_adapt_to_multi_dt.sh --stage 2 --train-dbn false --hid-layers $((hid_layers_bn_stage1 - 2)) --hid-dim $hid_dim_bn_stage1 \
-         --bn-dim $bn_dim \
-        "${TRAIN_LANG}" "${TEST_LANG}" \
-         ${hmm_dir} ${ali_dt_dir} ${data_fmllr_dir} \
-        dummy ${dnn_dir}/monosoftmax_dt_bn_stage1 || exit 1;
-    # w/ pre-training
-    #./run_dnn_adapt_to_multi_dt.sh --stage 1 --train-dbn true --hid-layers $hid_layers_bn_stage1 --hid-dim $hid_dim_bn_stage1 \
-        #--bn-layer $bn_layer --bn-dim $bn_dim \
-        #"${TRAIN_LANG}" "${TEST_LANG}" \
-        #${hmm_dir} ${ali_dt_dir} ${data_fmllr_dir} \
-        #${dbn_dir}/monosoftmax_dt_bn_stage1 ${dnn_dir}/monosoftmax_dt_bn_stage1 || exit 1;
-        
-    # get BN feats and append with fMLLR feats
-    ./run_bnf.sh --use-gpu yes --remove-last-components $remove_last_components \
-        "${TRAIN_LANG}" "${TEST_LANG}" ${data_fmllr_dir} \
-        ${dnn_dir}/monosoftmax_dt_bn_stage1 ${data_bn_dir}/monosoftmax_dt_bn_stage1 ${data_fmllr_bn_dir}/monosoftmax_dt_bn_stage1 || exit 1;
-        
-    # initialize an AM-DNN with fMLLR+BN feats obtained from multilingual data. Then train the AM-DNN.
-    # w/ random init
-    ./run_dnn_adapt_to_multi_dt.sh --stage 3 --train-dbn false --hid-layers $((hid_layers_bn_stage2 - 2)) --hid-dim $hid_dim_bn_stage2 \
-        --bn-dim $bn_dim \
-        --splice $splice_bn_stage2 --splice-step $splice_step_bn_stage2 \
-        --skip-decode false \
-        "${TRAIN_LANG}" "${TEST_LANG}" \
-       ${hmm_dir} ${ali_dt_dir} ${data_fmllr_bn_dir}/monosoftmax_dt_bn_stage1 \
-        dummy ${dnn_dir}/monosoftmax_dt_bn_stage2 || exit 1;            
-    # w/ pre-training
-    #./run_dnn_adapt_to_multi_dt.sh --stage 2 --train-dbn true --hid-layers $hid_layers_bn_stage2 --hid-dim $hid_dim_bn_stage2 \
-        #"${TRAIN_LANG}" "${TEST_LANG}" \
-        #${hmm_dir} ${ali_dt_dir} ${data_fmllr_bn_dir}/monosoftmax_dt_bn_stage1 \
-        #${dbn_dir}/indbn/monosoftmax_dt_bn_stage2 ${dnn_dir}/monosoftmax_dt_bn_stage2 || exit 1;
-  else
-    ./run_dnn_adapt_to_multi_dt.sh --stage 1 --train-dbn true \
-      ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-      "${TRAIN_LANG}" "${TEST_LANG}" \
-      ${hmm_dir} ${ali_dt_dir} ${data_fmllr_dir} \
-      ${dbn_dir}/monosoftmax_dt ${dnn_dir}/monosoftmax_dt || exit 1;
-  fi
+  ./run_dnn_adapt_to_multi_dt.sh --stage 1 --train-dbn true \
+    ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+    "${TRAIN_LANG}" "${TEST_LANG}" \
+    ${hmm_dir} ${ali_dt_dir} ${data_fmllr_dir} \
+    ${dbn_dir}/monosoftmax_dt ${dnn_dir}/monosoftmax_dt || exit 1;
 fi
 # =========================================
 
@@ -216,145 +166,33 @@ fi
 if [[ $stage -le 30 ]]; then
 # Now, on top of the hidden layers of the multilingual DT system, create a new soft-max layer. This becomes a new DNN.
 # Fine tune all layers of this new DNN using PT of the test language.
-    if $use_bn; then
-        # adapt the BN-DNN using PTs
-        ./run_dnn_adapt_to_mono_pt.sh --stage 1 --train-dbn false --precomp-dnn "${dnn_dir}/monosoftmax_dt_bn_stage1/final.nnet" --replace-softmax "true" \
-            "${TRAIN_LANG}" "${TEST_LANG}" \
-            ${hmm_dir} ${ali_pt_dir} \
-            ${data_fmllr_dir}  ${dnn_dir}/monosoftmax_pt_bn_stage1  ${dnn_dir}/monosoftmax_pt_bn_stage1 || exit 1;
-        
-        # get BN feats and append with fMLLR feats
-        ./run_bnf.sh --use-gpu yes --remove-last-components $remove_last_components \
-            "${TRAIN_LANG}" "${TEST_LANG}" ${data_fmllr_dir} \
-            ${dnn_dir}/monosoftmax_pt_bn_stage1 ${data_bn_dir}/monosoftmax_pt_bn_stage1 ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 || exit 1;
-        
-        # initialize an AM-DNN with fMLLR+BN feats obtained from multilingual data
-        ./run_dnn_adapt_to_multi_dt.sh --stage 3 --train-dbn false --hid-layers $((hid_layers_bn_stage2 - 2)) --hid-dim $hid_dim_bn_stage2 \
-            --bn-dim $bn_dim \
-            ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice_bn_stage2 --splice-step $splice_step_bn_stage2 \
-            --skip-decode true \
-            "${TRAIN_LANG}" "${TEST_LANG}" \
-            ${hmm_dir} ${ali_dt_dir} \
-            ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 \
-            ${dnn_dir}/monosoftmax_pt_bn_init_stage2 ${dnn_dir}/monosoftmax_pt_bn_init_stage2 || exit 1;
-                    
-        # train the AM-DNN
-        (./run_dnn_adapt_to_mono_pt.sh --stage 3 --train-dbn false --precomp-dnn "${dnn_dir}/monosoftmax_pt_bn_init_stage2/final.nnet" \
-            --replace-softmax true \
-            ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-opts "--delta-order=$delta_order" --splice $splice_bn_stage2 --splice-step $splice_step_bn_stage2 \
-            "${TRAIN_LANG}" "${TEST_LANG}" \
-            ${hmm_dir} ${ali_pt_dir} \
-            ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 \
-            ${dnn_dir}/monosoftmax_pt_bn_stage2 ${dnn_dir}/monosoftmax_pt_bn_stage2 || exit 1;) &
-            
-        # Train the AM-DNN w/ pretraining
-        #(./run_dnn_adapt_to_mono_pt.sh --stage 2 --train-dbn true \
-            #--hid-layers $hid_layers_bn_stage2 --hid-dim $hid_dim_bn_stage2 \
-            #--splice $splice --splice-step $splice_step \
-            #"${TRAIN_LANG}" "${TEST_LANG}" \
-            #${hmm_dir} ${ali_pt_dir} \
-            #${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 ${dbn_dir}/monosoftmax_pt_bn_stage2_$tag ${dnn_dir}/monosoftmax_pt_bn_stage2_$tag || exit 1; ) &         
-        
-        ## train a new AM-DNN with fMLLR+BN feats
-        ## randomly init dnn
-        #for h_layers_bn_stage2 in 4 6; do
-          #for h_dim_bn_stage2 in 1024 2048; do
-            #for splice_step in 1 2 5; do
-              #for splice in 2 5; do
-                #tag=l_${h_layers_bn_stage2}_d_${h_dim_bn_stage2}_sp_${splice}_st_${splice_step}
-                
-                ## Initialize the AM-DNN with multilingual data
-                #if [[ ! -f ${dnn_dir}/monosoftmax_pt_init_bn_stage2_$tag/final.nnet ]]; then
-                  #./run_dnn_adapt_to_multi_dt.sh --stage 3 --train-dbn false --hid-layers $((h_layers_bn_stage2 - 2)) --hid-dim $h_dim_bn_stage2 \
-                    #--bn-dim $bn_dim \
-                    #--splice $splice --splice-step $splice_step \
-                    #--skip-decode true \
-                    #"${TRAIN_LANG}" "${TEST_LANG}" \
-                    #${hmm_dir} ${ali_dt_dir} \
-                    #${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 \
-                    #${dnn_dir}/monosoftmax_pt_init_bn_stage2_$tag ${dnn_dir}/monosoftmax_pt_init_bn_stage2_$tag || exit 1;
-                #fi
-        
-                ## Train the AM-DNN w/ multilingual data initialization
-                #(./run_dnn_adapt_to_mono_pt.sh --stage 3 --train-dbn false --precomp-dnn "${dnn_dir}/monosoftmax_pt_init_bn_stage2_$tag/final.nnet" \
-                    #--replace-softmax true \
-                    #--splice $splice --splice-step $splice_step \
-                    #"${TRAIN_LANG}" "${TEST_LANG}" \
-                    #${hmm_dir} ${ali_pt_dir} \
-                    #${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 \
-                    #${dnn_dir}/monosoftmax_pt_bn_stage2_$tag ${dnn_dir}/monosoftmax_pt_bn_stage2_$tag || exit 1;) &
-                ## Train the AM-DNN w/ pretraining
-                ##(./run_dnn_adapt_to_mono_pt.sh --stage 2 --train-dbn true \
-                    ##--hid-layers $hid_layers_bn_stage2 --hid-dim $hid_dim_bn_stage2 \
-                    ##--splice $splice --splice-step $splice_step \
-                    ##"${TRAIN_LANG}" "${TEST_LANG}" \
-                    ##${hmm_dir} ${ali_pt_dir} \
-                    ##${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1 ${dbn_dir}/monosoftmax_pt_bn_stage2_$tag ${dnn_dir}/monosoftmax_pt_bn_stage2_$tag || exit 1; ) &
-              #done
-              #wait
-            #done
-          #done
-        #done       
-    else
-        ./run_dnn_adapt_to_mono_pt.sh --stage 1  --train-dbn false  --precomp-dnn "${dnn_dir}/monosoftmax_dt/final.nnet" --replace-softmax "true" \
-          ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-          ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
-          "${TRAIN_LANG}" \
-          "${TEST_LANG}" \
-          ${hmm_dir} \
-          ${ali_pt_dir} \
-          ${data_fmllr_dir} \
-          ${dnn_dir}/monosoftmax_pt ${dnn_dir}/monosoftmax_pt || exit 1;
-    fi
+  ./run_dnn_adapt_to_mono_pt.sh --stage 1  --train-dbn false  --precomp-dnn "${dnn_dir}/monosoftmax_dt/final.nnet" --replace-softmax "true" \
+    ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+    ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
+    "${TRAIN_LANG}" \
+    "${TEST_LANG}" \
+    ${hmm_dir} \
+    ${ali_pt_dir} \
+    ${data_fmllr_dir} \
+    ${dnn_dir}/monosoftmax_pt ${dnn_dir}/monosoftmax_pt || exit 1;
 fi
 
 if [[ $stage -le 31 ]]; then
 # Now try the same thing using different levels of frame weighting derived from best path PT lattice. Do we get good improvements using frame weighting?
 i=1
 for thresh in 0.5 0.6 0.7 0.8 0.9 ; do
-   if $use_bn; then
-        # adapt the BN-DNN using PTs
-        ./run_dnn_adapt_to_mono_pt_frame_wt.sh --stage 2  --replace-softmax "true" \
-            --splice 5 --splice-step 1 --threshold ${thresh} \
-            "${TEST_LANG}" ${ali_pt_dir} ${lats_pt_dir} \
-            ${dnn_dir}/monosoftmax_dt_bn_stage1/final.nnet \
-            ${data_fmllr_dir}  ${dnn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} || exit 1;
-        
-        # get BN feats and append with fMLLR feats
-        ./run_bnf.sh --use-gpu yes --remove-last-components $remove_last_components \
-            "${TRAIN_LANG}" "${TEST_LANG}" ${data_fmllr_dir} \
-            ${dnn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} ${data_bn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} || exit 1;            
-        
-        # initialize an AM-DNN with fMLLR+BN feats obtained from multilingual data
-        ./run_dnn_adapt_to_multi_dt.sh --stage 3 --train-dbn false --hid-layers $((hid_layers_bn_stage2 - 2)) --hid-dim $hid_dim_bn_stage2 \
-            --bn-dim $bn_dim \
-            --splice $splice_bn_stage2 --splice-step $splice_step_bn_stage2 \
-            --skip-decode true \
-            "${TRAIN_LANG}" "${TEST_LANG}" \
-            ${hmm_dir} ${ali_dt_dir} \
-            ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} \
-            ${dnn_dir}/monosoftmax_pt_bn_init_stage2_fw${thresh} ${dnn_dir}/monosoftmax_pt_bn_init_stage2_fw${thresh} || exit 1;
-        
-        # train the AM-DNN
-        (./run_dnn_adapt_to_mono_pt_frame_wt.sh --stage 2  --replace-softmax "true" \
-            --splice $splice_bn_stage2 --splice-step $splice_step_bn_stage2 --threshold ${thresh} \
-            "${TEST_LANG}" ${ali_pt_dir} ${lats_pt_dir} \
-            ${dnn_dir}/monosoftmax_pt_bn_init_stage2_fw${thresh}/final.nnet \
-            ${data_fmllr_bn_dir}/monosoftmax_pt_bn_stage1_fw${thresh} ${dnn_dir}/monosoftmax_pt_bn_stage2_fw${thresh} || exit 1;) &        
-    else        
-      nnet_outdir=${dnn_dir}/monosoftmax_pt_fw${thresh}
-      (./run_dnn_adapt_to_mono_pt_frame_wt.sh --stage 2 --replace-softmax "true" \
-        ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-        --threshold ${thresh} \
-        ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
-        "${TEST_LANG}" \
-        ${ali_pt_dir} \
-        ${lats_pt_dir} \
-        "${dnn_dir}/monosoftmax_dt/final.nnet" \
-        ${data_fmllr_dir} \
-        ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1;) &
-      i=$((i%N_BG)); ((i++==0)) && wait
-    fi
+  nnet_outdir=${dnn_dir}/monosoftmax_pt_fw${thresh}
+  (./run_dnn_adapt_to_mono_pt_frame_wt.sh --stage 2 --replace-softmax "true" \
+    ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+    --threshold ${thresh} \
+    ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
+    "${TEST_LANG}" \
+    ${ali_pt_dir} \
+    ${lats_pt_dir} \
+    "${dnn_dir}/monosoftmax_dt/final.nnet" \
+    ${data_fmllr_dir} \
+    ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1;) &
+  i=$((i%N_BG)); ((i++==0)) && wait
 done
 fi
 # =========================================
@@ -363,11 +201,11 @@ fi
 ## MTL trained with crowd PT senones and DT senones; Task 1: CE, Task 2: CE
 if [[ $stage -le 40 ]]; then
 i=1
-for thresh in 0 0.2 0.4 0.6 0.8; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with frame weights above this threshold will be trained. Otherwise, ignored)
+for thresh in 0.6; do # 0 0.2 0.4 0.6 0.8 (Only frames with frame weights above this threshold will be trained. Otherwise, ignored. From expts, the best setting is 0.6)
   for num_copies_2 in 0; do # 0 2 4 6
     for num_copies_1 in 2; do # 2 4
-      for alpha in 1.0; do  # 0.2 0.4 0.6 0.8 1.0 (weight for the secondary task)
-        etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}
+      for alpha in 1.0; do  # 0.2 0.4 0.6 0.8 1.0 (Weight for the secondary task. From expts, the best setting is 1.0 for all languages except SW. But SW PER is worse by only 0.1% for other alpha values)
+        etag=type"ss"_fw${thresh}_cop${num_copies_1}${num_copies_2}_alpha${alpha}
         nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
         mkdir -p $nnet_outdir
         [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
@@ -390,129 +228,82 @@ for thresh in 0 0.2 0.4 0.6 0.8; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with fram
 done # thresh
 fi
 # =========================================
-exit 0
 
 # =========================================
-## MTL trained with crowd PT senones and DT senones; Task 1:  Knowledge Distillation (KD) or Target Interpolation (TI), Task 2: CE
+## MTL trained with crowd PT senones and DT senones; Task 1:  Target Interpolation (TI), Task 2: CE
 if [[ $stage -le 42 ]]; then
-i=1   
+i=1
 for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with frame weights above this threshold will be trained. Otherwise, ignored)
   for num_copies_2 in 0; do # 0 2 4 6
     for num_copies_1 in 2; do # 2 4
-      if $use_bn; then
-        data_fmllr_cop_dir=${data_fmllr_dir}/combined_bn_stage1_fw${thresh}_cop${num_copies_1}
-        bn_dnn_dir=${dnn_dir}/multisoftmax_pt_bn_stage1_fw${thresh}_cop${num_copies_1}
-        bn_feats_dir=${data_bn_dir}/multisoftmax_pt_bn_stage1_fw${thresh}_cop${num_copies_1}
-        bn_fmllr_feats_dir=${data_fmllr_bn_dir}/multisoftmax_pt_bn_stage1_fw${thresh}_cop${num_copies_1}
-      
-        # adapt the BN-DNN using PTs
-        if [[ ! -f "${bn_dnn_dir}/final.nnet" ]]; then
-        ./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt_bn_stage1/final.nnet" --data-type-csl "pt:dt"  --lang-weight-csl "1.0:1.0"  \
-          --threshold-csl "${thresh}:0.0" --lat-dir-csl "${lats_pt_dir}:-" --dup-and-merge-csl "${num_copies_1}>>1:0>>0" \
-          --splice 5 --splice-step 1 \
-          "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
-          "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_cop_dir} \
-          ${bn_dnn_dir} || exit 1;
-
-        # get BN feats and append with fMLLR feats
-        ./run_bnf.sh --use-gpu yes --remove-last-components ${remove_last_components} \
-          "${TRAIN_LANG}" "${TEST_LANG}" ${data_fmllr_dir} \
-          ${bn_dnn_dir} ${bn_feats_dir} ${bn_fmllr_feats_dir} || exit 1;
-        else
-          echo "Features already exist in: ${bn_fmllr_feats_dir} . Skip"
-        fi
-       
-        for splice_step_bn_stage2 in 1 2 5; do
-          for splice_bn_stage2 in 2 5; do        
-            tag="sp_${splice_bn_stage2}_st_${splice_step_bn_stage2}"          
-            bnam_fmllr_feats_cop_dir=${data_fmllr_bn_dir}/combined_bn_stage2_fw${thresh}_cop${num_copies_1}
-            bnam_init_dnn_dir=${dnn_dir}/multisoftmax_pt_bn_init_stage2_fw${thresh}_cop${num_copies_1}
-            bnam_dnn_dir=${dnn_dir}/multisoftmax_pt_bn_stage2_fw${thresh}_cop${num_copies_1}
-              
-            bnam_fmllr_feats_cop_dir=${bnam_fmllr_feats_cop_dir}_${tag}
-            bnam_init_dnn_dir=${bnam_init_dnn_dir}_${tag}
-            bnam_dnn_dir=${bnam_dnn_dir}_${tag}
-                    
-            if [[ ! -f "${bnam_dnn_dir}/final.nnet" ]]; then
-            # initialize an AM-DNN with fMLLR+BN feats obtained from multilingual data
-            ./run_dnn_adapt_to_multi_dt.sh --stage 3 --train-dbn false --hid-layers $((hid_layers_bn_stage2 - 2)) --hid-dim $hid_dim_bn_stage2 \
-              --bn-dim $bn_dim \
-              --splice ${splice_bn_stage2} --splice-step ${splice_step_bn_stage2} \
-              --skip-decode true \
-              "${TRAIN_LANG}" "${TEST_LANG}" \
-              ${hmm_dir} ${ali_dt_dir} \
-              ${bn_fmllr_feats_dir} \
-              ${bnam_init_dnn_dir} ${bnam_init_dnn_dir} || exit 1;        
-            # train the AM-DNN
-            ./run_dnn_multilingual.sh --dnn-init "${bnam_init_dnn_dir}/final.nnet" --data-type-csl "pt:dt"  --lang-weight-csl "1.0:1.0"  \
-              --threshold-csl "${thresh}:0.0" --lat-dir-csl "${lats_pt_dir}:-" --dup-and-merge-csl "${num_copies_1}>>1:0>>0" \
-              --splice ${splice_bn_stage2} --splice-step ${splice_step_bn_stage2} \
+      for alpha in 1.0; do  # 0.2 0.4 0.6 0.8 1.0
+        # "hard": new tgt = rho*ground truth + (1-rho)*(1-hot posterior of nnet)
+        # "soft": new tgt = rho*ground truth + (1-rho)*(posterior of nnet)
+        # Note: When rho=1.0, there is no target interpolation. Hence, the training collapses to standard CE training.
+        for tgt_interp_mode in "hard" "soft"; do
+          for rho in 1 0.8 0.6 0.4 0.2; do
+            etag=type"ss"_fw${thresh}_cop${num_copies_1}${num_copies_2}_alpha${alpha}_${tgt_interp_mode}_rho${rho}
+            nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
+            mkdir -p $nnet_outdir
+            [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
+            (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
+              --objective-csl "xent:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s" \
+              --tgt-interp-mode "$tgt_interp_mode" --rho "$rho" \
+              --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+              --threshold-csl "${thresh}:0.0" \
+              --lat-dir-csl "${lats_pt_dir}:-" \
+              --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
+              ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+              --min-iters ${min_iters} \
+              ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
               "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
-              "${bn_fmllr_feats_dir}/${TEST_LANG}/train:${bn_fmllr_feats_dir}/${UNILANG_CODE}/train" ${bnam_fmllr_feats_cop_dir} \
-              ${bnam_dnn_dir} || exit 1;
-            else
-              echo "Model already exist in: ${bnam_fmllr_feats_cop_dir}/final.nnet . Skip"    
-            fi        
-          done # splice
-          wait
-        done # splice step
-      else
-        for alpha in 1.0; do  # for alpha in 0.2 0.4 0.6 0.8 1.0; do          
-          if ! $teacher_student; then
-            # "hard": new tgt = rho*ground truth + (1-rho)*(1-hot posterior of nnet)
-            # "soft": new tgt = rho*ground truth + (1-rho)*(posterior of nnet)
-            # Note: When rho=1.0, there is no target interpolation. Hence, the training collapses to standard CE training.
-            for tgt_interp_mode in "hard" "soft"; do
-              for rho in 1 0.8 0.6 0.4 0.2; do
-                etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_${tgt_interp_mode}_rho${rho}
-                nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
-                mkdir -p $nnet_outdir
-                [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
-                (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
-                  --objective-csl "xent:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s" \
-                  --tgt-interp-mode "$tgt_interp_mode" --rho "$rho" \
-                  --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-                  --threshold-csl "${thresh}:0.0" \
-                  --lat-dir-csl "${lats_pt_dir}:-" \
-                  --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
-                  ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-                  --min-iters ${min_iters} \
-                  ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
-                  "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
-                  "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
-                  ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
-                i=$((i%N_BG)); ((i++==0)) && wait
-              done # rho
-            done # tgt_interp_mode
-          else
-            # Note: When posterior_temperature = 0 AND rho_ts = 1, T/S training collapses to standard CE training. When rho_ts = 1, there is no effect of varying softmax_temperature.
-            for posterior_temperature in 1 2 3; do # modify posterior of PTs by applying a temperature softmax on the PTs
-              for softmax_temperature in 1 2 3; do
-                for rho_ts in  0.8 0.6 0.4 0.2; do
-                  etag=type"ss"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha}_Tpt${posterior_temperature}_T${softmax_temperature}_rho${rho_ts}
-                  nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
-                  mkdir -p $nnet_outdir
-                  [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
-                  (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
-                    --objective-csl "ts:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s"   \
-                    --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher "${dnn_dir}/monosoftmax_dt/final.nnet" --posterior-temperature $posterior_temperature \
-                    --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
-                    --threshold-csl "${thresh}:0.0" \
-                    --lat-dir-csl "${lats_pt_dir}:-" \
-                    --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
-                    ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
-                    --min-iters ${min_iters} \
-                    ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
-                    "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
-                    "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
-                    ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
-                    i=$((i%N_BG)); ((i++==0)) && wait
-                done # rho_ts
-              done # softmax_temperature
-            done # posterior_temperature
-          fi
-        done # alpha
-      fi
+              "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
+              ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
+            i=$((i%N_BG)); ((i++==0)) && wait
+          done # rho
+        done # tgt_interp_mode
+      done # alpha
+    done  # num_copies_1
+  done  # num_copies_2
+done # thresh
+fi
+# =========================================
+
+
+# =========================================
+## MTL trained with crowd PT senones and DT senones; Task 1:  Knowledge Distillation (KD), Task 2: CE
+if [[ $stage -le 44 ]]; then
+i=1
+for thresh in 0.0; do # 0.5 0.6 0.7 0.8 0.9 (Only frames with frame weights above this threshold will be trained. Otherwise, ignored)
+  for num_copies_2 in 0; do # 0 2 4 6
+    for num_copies_1 in 2; do # 2 4
+      for alpha in 1.0; do  # 0.2 0.4 0.6 0.8 1.0
+        for posterior_temperature in 2 3 4; do # modify posterior of PTs by applying a temperature softmax on the PTs
+        # Note: When posterior_temperature = 0 AND rho_ts = 1, T/S training collapses to standard CE training
+          for softmax_temperature in 2 3; do
+            for rho_ts in  0.8 0.6 0.4 0.2; do # If rho_ts = 1, there is no effect of varying softmax_temperature.
+              etag=type"ss"_fw${thresh}_cop${num_copies_1}${num_copies_2}_alpha${alpha}_Tpt${posterior_temperature}_T${softmax_temperature}_rho${rho_ts}
+              nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
+              mkdir -p $nnet_outdir
+              [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
+              (./run_dnn_multilingual.sh --dnn-init "${dnn_dir}/monosoftmax_dt/final.nnet" \
+                --objective-csl "ts:xent" --lang-weight-csl "1.0:${alpha}"  --data-type-csl "pt:dt"  --label-type-csl "s:s"   \
+                --teacher-student "true"  --softmax-temperature $softmax_temperature  --rho-ts $rho_ts --mlp-teacher "${dnn_dir}/monosoftmax_dt/final.nnet" --posterior-temperature $posterior_temperature \
+                --renew-nnet-type "blocksoftmax" --randomizer-size ${randomizer_size} --minibatch-size ${minibatch_size} \
+                --threshold-csl "${thresh}:0.0" \
+                --lat-dir-csl "${lats_pt_dir}:-" \
+                --dup-and-merge-csl "${num_copies_1}>>1:${num_copies_2}>>2" \
+                ${cmvn_opts:+ --cmvn-opts "$cmvn_opts"} --delta-order $delta_order --splice $splice --splice-step $splice_step \
+                --min-iters ${min_iters} \
+                ${parallel_opts:+ --parallel-opts "$parallel_opts"} \
+                "${TEST_LANG}:${UNILANG_CODE}" "${ali_pt_dir}:${ali_dt_dir}" \
+                "${data_fmllr_dir}/${TEST_LANG}/train:${data_fmllr_dir}/${UNILANG_CODE}/train" ${data_fmllr_dir}/${TEST_LANG}/combined_$etag \
+                ${nnet_outdir} 2>&1 | tee ${nnet_outdir}/run_dnn_multilingual.log || exit 1; ) &
+              i=$((i%N_BG)); ((i++==0)) && wait
+            done # rho_ts
+          done # softmax_temperature
+        done # posterior_temperature
+      done # alpha      
     done  # num_copies_1
   done  # num_copies_2
 done # thresh
@@ -528,8 +319,8 @@ for thresh in 0.6; do # 0.5 0.6 0.7 0.8 0.9
   for num_copies_2 in 0; do # 0 2 4 6
     for num_copies_1 in 2 4; do # 0 1 2 3 4
       for alpha_2 in 1.4 1.6 1.8; do
-        for alpha_1 in 1.0 2.0; do          
-          etag=type"sp"_fw${thresh}0.0_cop${num_copies_1}${num_copies_2}_alpha${alpha_1}${alpha_2}
+        for alpha_1 in 1.0 2.0; do
+          etag=type"sp"_fw${thresh}_cop${num_copies_1}${num_copies_2}_alpha${alpha_1}${alpha_2}
           nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
           mkdir -p $nnet_outdir
           [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
@@ -565,8 +356,8 @@ for thresh in 0.6; do # full range: 0.5 0.6 0.7 0.8 0.9
       for num_copies_1 in 2 4; do # full range: 0 1 2 3 4
         for alpha_3 in 1.4 1.6 1.8; do
           for alpha_2 in 0.2; do
-            for alpha_1 in 1.0 2.0; do   
-              etag=type"ssp"_fw${thresh}0.00.0_cop${num_copies_1}${num_copies_2}${num_copies_3}_alpha${alpha_1}${alpha_2}${alpha_3}
+            for alpha_1 in 1.0 2.0; do
+              etag=type"ssp"_fw${thresh}_cop${num_copies_1}${num_copies_2}${num_copies_3}_alpha${alpha_1}${alpha_2}${alpha_3}
               nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
               mkdir -p $nnet_outdir
               [ -f ${nnet_outdir}/final.nnet ] && echo "${nnet_outdir}/final.nnet exists. Skipping this run" && continue
@@ -659,7 +450,7 @@ if [[ $stage -le 60 ]]; then
                         rm -rf ${nnet_outdir}/ali-post/local/${TEST_LANG}_unsup*/post_train_thresh_*/post.*.ark ) &
                       i=$((i%N_BG)); ((i++==0)) && wait
                     done # alpha_1
-                  done # alpha_2  
+                  done # alpha_2
                 done # alpha_3
               done # nhl3
             done # nhl1
@@ -714,7 +505,7 @@ if [[ $stage -le 61 ]]; then
               for nhl3 in 0; do
                 for alpha_3 in 0.001 0.005; do
                   for alpha_2 in 1.6 1.8 2.0; do
-                    for alpha_1 in 1.0 2.0; do                     
+                    for alpha_1 in 1.0 2.0; do
                       etag=type"spu"_fw${thresh[0]}${thresh[1]}${thresh[2]}_cop${num_copies[0]}${num_copies[1]}${num_copies[2]}_unsup${nutts_subset}_alpha${alpha_1}${alpha_2}${alpha_3}_nhl${nhl1}${nhl2}${nhl3}
                       nnet_outdir=${dnn_dir}/multisoftmax_pt_${etag}
                       mkdir -p $nnet_outdir
@@ -783,9 +574,9 @@ for nutts_small_unsup in 4000 ; do  # 4000 3000 2000 1000
             unsupsmall_dir_tag="unsup_${nutts_small}" 
             feat_unsupsmall_dir=${data_fmllr_dir}/${TEST_LANG}/${unsupsmall_dir_tag}
            
-            if [ "$nutts_small" -lt "$nutts" ]; then             
+            if [ "$nutts_small" -lt "$nutts" ]; then
               utils/subset_data_dir.sh ${feat_unsup_dir} ${nutts_small} ${feat_unsupsmall_dir}
-            fi           
+            fi
    
             etag=type"sss"_fw${thresh[0]}${thresh[1]}${thresh[2]}_cop${num_copies[0]}${num_copies[1]}${num_copies[2]}_unsup${nutts_small}
             nnet_outdir=${dnn_dir}/multisoftmax_pt_$etag
