@@ -36,10 +36,10 @@ int main(int argc, char *argv[]) {
         "Usage:  a) Non Teacher-Student Loss,\n"
     	"        nnet-train-frmshuff [options] <feature-rspecifier> <targets-rspecifier> <model-in> [<model-out>]\n\n"
     	"        b) Teacher-Student Loss,\n"
-    	"        nnet-train-frmshuff [options] --teacher-student=true --softmax-temperature=<T>0> --rho=<[0,1]> <feature-rspecifier> <targets-rspecifier1> <targets-rspecifier2> <model-in> [<model-out>]\n\n"
+    	"        nnet-train-frmshuff [options] --softmax-temperature=<T>0> --rho=<[0,1]> <feature-rspecifier> <targets-rspecifier1> <targets-rspecifier2> <model-in> [<model-out>]\n\n"
         "e.g.: \n"
-        " a) nnet-train-frmshuff scp:feature.scp ark:posterior.ark nnet.init nnet.iter1\n"
-    	" b) nnet-train-frmshuff --teacher-student=true --softmax-temperature=2 --rho=0.2 scp:feature.scp ark:1-hot-posterior.ark ark:soft-posterior.ark nnet.init nnet.iter1\n";
+        " a) nnet-train-frmshuff --objective-function=xent,500,1.0 scp:feature.scp ark:posterior.ark nnet.init nnet.iter1\n"
+    	" b) nnet-train-frmshuff --objective-function=ts,500,1.0 --softmax-temperature=2 --rho=0.2 scp:feature.scp ark:1-hot-posterior.ark ark:soft-posterior.ark nnet.init nnet.iter1\n";
 
 
     ParseOptions po(usage);
