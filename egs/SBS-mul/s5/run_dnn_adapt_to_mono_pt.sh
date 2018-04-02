@@ -229,6 +229,7 @@ if [ $stage -le 4 ]; then
       $graph_dir $data_fmllr/$L/eval $dir/decode_eval_text_G_$L || exit 1;) &     
     (cd $dir; ln -s  decode_dev_text_G_$L decode_dev_$L; ln -s decode_eval_text_G_$L decode_eval_$L)    
   done
+  wait
 fi
 
 echo "Done: `date`"
